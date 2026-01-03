@@ -210,6 +210,87 @@ Type definitions: [llms-full.txt](https://github.com/thinking-machines-lab/tinke
 
 ---
 
+## Parallelizing Evaluation
+
+Tinker charges per token, not per GPU-hour. This means **parallelization is free**—you can fire off many concurrent requests without additional cost, only paying for the tokens processed. Prioritize speed in evaluation runs by parallelizing sampling requests.
+
+### Why Parallelize
+
+- **Cost model**: Tinker bills per million tokens, not compute time. Running 100 requests in parallel costs the same as running them sequentially.
+- **Speed**: A sequential evaluation of 1000 samples at 1s/sample = 16+ minutes. Parallelized with concurrency=50, it takes ~20 seconds.
+- **Rate limits**: Tinker handles high concurrency well. Use `asyncio.Semaphore` to cap concurrent requests if needed (e.g., 100-200 concurrent requests is typically safe).
+
+### Sequential (Slow) — Don't Do This
+
+```python
+# BAD: Sequential evaluation - very slow
+results = []
+for idx, example in enumerate(dataset):
+    completion = await completer(prompt)  # Waits for each one
+    results.append(process(completion))
+```
+
+### Parallel (Fast) — Do This Instead
+
+```python
+import asyncio
+
+async def evaluate_single(idx: int, example: dict, completer, semaphore) -> EvalResult:
+    """Evaluate a single example with concurrency control."""
+    async with semaphore:
+        prompt = format_prompt(example)
+        completion = await completer(prompt)
+        return EvalResult(
+            index=idx,
+            question=example["question"],
+            ground_truth=example["answer"],
+            completion=completion,
+            extracted_answer=extract_answer(completion),
+            correct=grade(completion, example["answer"]),
+        )
+
+async def evaluate_parallel(dataset, completer, max_concurrent: int = 50) -> list[EvalResult]:
+    """Evaluate all examples in parallel with bounded concurrency."""
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    tasks = [
+        evaluate_single(idx, example, completer, semaphore)
+        for idx, example in enumerate(dataset)
+    ]
+    
+    # Run all tasks concurrently, gather results in order
+    results = await asyncio.gather(*tasks)
+    return results
+```
+
+### Key Patterns
+
+1. **Use `asyncio.Semaphore`** to limit concurrent requests (50-100 is a good default)
+2. **Use `asyncio.gather`** to run all tasks concurrently and collect results
+3. **Keep individual task functions simple** — one sample per coroutine
+4. **Handle errors gracefully** — wrap individual completions in try/except so one failure doesn't crash the batch
+
+### Progress Tracking with Parallel Evaluation
+
+```python
+import asyncio
+from tqdm.asyncio import tqdm_asyncio
+
+async def evaluate_parallel_with_progress(dataset, completer, max_concurrent: int = 50):
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    async def eval_one(idx, example):
+        async with semaphore:
+            # ... evaluation logic ...
+            return result
+    
+    tasks = [eval_one(idx, ex) for idx, ex in enumerate(dataset)]
+    results = await tqdm_asyncio.gather(*tasks, desc="Evaluating")
+    return results
+```
+
+---
+
 ## Training Architecture
 
 All recipes wrap two core modules:

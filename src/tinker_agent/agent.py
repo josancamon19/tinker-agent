@@ -62,6 +62,7 @@ async def run_agent(config: Config) -> None:
     else:
         system_prompt_config = {"type": "preset", "preset": "claude_code"}
 
+    # TODO: check planning mode
     options = ClaudeAgentOptions(
         tools={"type": "preset", "preset": "claude_code"},
         system_prompt=system_prompt_config,
@@ -83,7 +84,13 @@ def _print_message(message: Message, verbose: bool = False) -> None:
     """Print a message from the agent with rich formatting."""
     # Handle final result
     if hasattr(message, "result") and message.result:
-        console.print(Panel(message.result, title="[bold green]Result[/bold green]", border_style="green"))
+        console.print(
+            Panel(
+                message.result,
+                title="[bold green]Result[/bold green]",
+                border_style="green",
+            )
+        )
         return
 
     # Handle content blocks
@@ -97,7 +104,9 @@ def _print_message(message: Message, verbose: bool = False) -> None:
 
             # Thinking block
             elif block_type == "thinking" or hasattr(block, "thinking"):
-                thinking = getattr(block, "thinking", None) or getattr(block, "text", "")
+                thinking = getattr(block, "thinking", None) or getattr(
+                    block, "text", ""
+                )
                 if thinking and verbose:
                     console.print(
                         Panel(
@@ -137,23 +146,27 @@ def _print_message(message: Message, verbose: bool = False) -> None:
                 is_error = getattr(block, "is_error", False)
 
                 if isinstance(content, list):
-                    content = "\n".join(
-                        getattr(c, "text", str(c)) for c in content
-                    )
+                    content = "\n".join(getattr(c, "text", str(c)) for c in content)
 
                 # Truncate long outputs
                 if len(str(content)) > 1000:
                     content = str(content)[:1000] + "\n... [truncated]"
 
                 style = "red" if is_error else "green"
-                title = "[bold red]Tool Error[/bold red]" if is_error else "[bold green]Tool Result[/bold green]"
+                title = (
+                    "[bold red]Tool Error[/bold red]"
+                    if is_error
+                    else "[bold green]Tool Result[/bold green]"
+                )
 
                 if verbose or is_error:
                     console.print(
                         Panel(
                             str(content),
                             title=title,
-                            subtitle=f"[dim]{tool_use_id}[/dim]" if tool_use_id else None,
+                            subtitle=f"[dim]{tool_use_id}[/dim]"
+                            if tool_use_id
+                            else None,
                             border_style=style,
                         )
                     )
