@@ -1,13 +1,10 @@
 [project]
 name = "tinker-agent"
 version = "0.1.0"
-description = "Add your description here"
+description = "Tinker Post Training Agent"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = [
-    "chz>=0.4.0",
-    "claude-agent-sdk>=0.1.18",
-]
+dependencies = ["chz>=0.4.0", "claude-agent-sdk>=0.1.18"]
 
 [tool.setuptools.packages.find]
 where = ["src/tinker_agent"]
