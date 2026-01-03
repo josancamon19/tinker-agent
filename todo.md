@@ -1,4 +1,0 @@
-- [ ] more consistency and guidelines on what to what not to
-- [ ] budget for tinker
-- [ ] how to choose hyperparams
-- [ ] how to run ablations, and info regarding hp sweeps

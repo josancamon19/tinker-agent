@@ -4,4 +4,10 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "chz>=0.4.0",
+    "claude-agent-sdk>=0.1.18",
+]
+
+[tool.setuptools.packages.find]
+where = ["src/tinker_agent"]
