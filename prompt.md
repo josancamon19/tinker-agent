@@ -29,12 +29,33 @@ If training finishes but the trained model performs the same as (or worse than) 
 
 Do not consider your task complete until you have:
 
-1. **Evaluated both models** — Run the same evaluation on the base model and the trained model
-2. **Reported comparative results** — Present baseline vs trained metrics side-by-side (e.g., "Base: 42% → Trained: 67%")
-3. **Saved evaluation outputs** — Write results to JSONL files:
-   - `baseline_{benchmark}.jsonl` — base model outputs and scores
-   - `trained_{benchmark}.jsonl` — trained model outputs and scores
-4. **Verified W&B logging** — Confirm metrics appear in the W&B dashboard. Use the [wandb API](https://docs.wandb.ai/ref/python/) to programmatically check that runs logged correctly if needed
+1. **Executed post-training** — The training job must run successfully. Without executing the actual training, the task is incomplete regardless of code quality
+2. **Evaluated both models** — Run the same evaluation on the base model and the trained model
+3. **Reported comparative results** — Present baseline vs trained metrics side-by-side (e.g., "Base: 42% → Trained: 67%")
+4. **Created a `results/` folder** with all required artifacts:
+   - `results/logs/` — Training logs (set `log_path="results/logs/{run_name}"` in your config)
+   - `results/base_model.jsonl` — Base model evaluation results
+   - `results/trained_model.jsonl` — Trained model evaluation results
+   - `results/summary.json` — Final metrics, tinker run ID, and training metadata
+
+   Each row in the JSONL evaluation files must contain these fields for deterministic validation:
+   ```json
+   {
+     "index": 0,
+     "question": "The original question/prompt",
+     "ground_truth": "The expected answer",
+     "completion": "The full model completion",
+     "extracted_answer": "The parsed answer from the completion",
+     "correct": true
+   }
+   ```
+5. **Recorded run metadata** — The `results/summary.json` must include:
+   - `tinker_run_id` — The run ID returned by Tinker
+   - `log_path` — Path where training logs were saved (e.g., `results/logs/math_rl_run_001`)
+   - `wandb_url` — Link to the W&B dashboard for this run
+   - `baseline_score` and `trained_score` — Final evaluation metrics
+6. **Verified W&B logging** — Confirm metrics appear in the W&B dashboard. Use the [wandb API](https://docs.wandb.ai/ref/python/) to programmatically check that runs logged correctly if needed
+7. **Ensured runnable codebase** — All scripts must execute without errors. Test that `uv run python train.py` works with the provided configuration
 
 ---
 
@@ -72,6 +93,34 @@ When a request involves unsupported parameters, respond with: "This configuratio
 
 ---
 
+## Getting Started
+
+Before beginning any task, you **must** verify access to the required environment variables:
+
+1. **Check for `.env` file** — Look for a `.env` file in the project root
+2. **Verify required variables** — Confirm these keys exist and have values:
+   - `TINKER_API_KEY`
+   - `WANDB_API_KEY`
+   - `WANDB_PROJECT`
+3. **If any are missing** — Stop and ask the user to provide them before continuing. Do not proceed with training setup until all credentials are confirmed
+
+Example check:
+
+```python
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+required = ["TINKER_API_KEY", "WANDB_API_KEY", "WANDB_PROJECT"]
+missing = [k for k in required if not os.getenv(k)]
+
+if missing:
+    raise ValueError(f"Missing required environment variables: {missing}")
+```
+
+---
+
 ## Environment Setup
 
 You will be provided with an `.env` file with:
@@ -101,6 +150,7 @@ dependencies = [
     "tinker",
     "tinker-cookbook",
     "wandb",
+    "python-dotenv",
 ]
 
 # ...
@@ -176,7 +226,7 @@ class Config:
     # Required
     model_name: str
     dataset_builder: SupervisedDatasetBuilder
-    log_path: str
+    log_path: str  # Must point to results/logs/{run_name} for proper artifact collection
     
     # Training
     learning_rate: float = 1e-4
@@ -202,6 +252,12 @@ class Config:
     load_checkpoint_path: str | None = None
 ```
 
+**Example `log_path` usage:**
+
+```python
+log_path = "results/logs/chat_sft_run_001"  # Logs saved here for artifact collection
+```
+
 ### RL Config (`rl.train.Config`)
 
 ```python
@@ -211,7 +267,7 @@ class Config:
     dataset_builder: RLDatasetBuilder
     learning_rate: float
     max_tokens: int
-    log_path: str
+    log_path: str  # Must point to results/logs/{run_name} for proper artifact collection
     
     # Sampling
     temperature: float = 1.0
@@ -243,6 +299,12 @@ class Config:
     
     # Resume
     load_checkpoint_path: str | None = None
+```
+
+**Example `log_path` usage:**
+
+```python
+log_path = "results/logs/math_rl_run_001"  # Logs saved here for artifact collection
 ```
 
 ---

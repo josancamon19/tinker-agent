@@ -11,6 +11,7 @@ resolution-markers = [
 [manifest]
 members = [
     "gsm8k-qwen3-4b",
+    "gsm8k-training",
     "tinker-agent",
 ]
 
@@ -932,8 +933,9 @@ wheels = [
 [[package]]
 name = "gsm8k-qwen3-4b"
 version = "0.1.0"
-source = { virtual = "runs/20260103_142108" }
+source = { virtual = "runs/20260103_153753" }
 dependencies = [
+    { name = "python-dotenv" },
     { name = "tinker" },
     { name = "tinker-cookbook" },
     { name = "wandb" },
@@ -941,6 +943,26 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "python-dotenv" },
+    { name = "tinker" },
+    { name = "tinker-cookbook", git = "https://github.com/thinking-machines-lab/tinker-cookbook.git" },
+    { name = "wandb" },
+]
+
+[[package]]
+name = "gsm8k-training"
+version = "0.1.0"
+source = { virtual = "runs/20260103_143213" }
+dependencies = [
+    { name = "python-dotenv" },
+    { name = "tinker" },
+    { name = "tinker-cookbook" },
+    { name = "wandb" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "python-dotenv" },
     { name = "tinker" },
     { name = "tinker-cookbook", git = "https://github.com/thinking-machines-lab/tinker-cookbook.git" },
     { name = "wandb" },
@@ -3596,13 +3618,20 @@ dependencies = [
     { name = "rich" },
 ]
 
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "chz", specifier = ">=0.4.0" },
     { name = "claude-agent-sdk", specifier = ">=0.1.18" },
     { name = "daytona", specifier = ">=0.128.1" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "rich", specifier = ">=14.2.0" },
 ]
+provides-extras = ["dev"]
 
 [[package]]
 name = "tinker-cookbook"
