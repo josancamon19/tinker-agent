@@ -4,7 +4,19 @@ version = "0.1.0"
 description = "Tinker Post Training Agent"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["chz>=0.4.0", "claude-agent-sdk>=0.1.18"]
+dependencies = [
+    "chz>=0.4.0",
+    "claude-agent-sdk>=0.1.18",
+    "daytona>=0.128.1",
+    "rich>=14.2.0",
+]
 
-[tool.setuptools.packages.find]
-where = ["src/tinker_agent"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ot_agent_v1"]
+
+[tool.uv.workspace]
+members = [
+    "runs/20260103_142108",
+]
+
