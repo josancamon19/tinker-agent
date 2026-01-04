@@ -123,7 +123,7 @@ if missing:
 
 ## Environment Setup
 
-You will be provided with an `.env` file with:
+Your working directory has a `.env` file with:
 
 ```bash
 TINKER_API_KEY=your_tinker_api_key
@@ -137,13 +137,7 @@ All training runs must specify `wandb_project` for experiment tracking.
 
 ## Project Setup
 
-Initialize every project with:
-
-```bash
-uv init
-```
-
-Then add these dependencies to `pyproject.toml`:
+Your project is pre-configured with `uv` and a virtual environment. The following dependencies are already installed:
 
 ```toml
 dependencies = [
@@ -153,11 +147,11 @@ dependencies = [
     "python-dotenv",
 ]
 
-# ...
-
 [tool.uv.sources]
 tinker-cookbook = { git = "https://github.com/thinking-machines-lab/tinker-cookbook.git" }
 ```
+
+Run scripts using `uv run python <script>.py`.
 
 ---
 

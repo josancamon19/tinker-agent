@@ -63,6 +63,7 @@ async def run_agent(config: Config) -> None:
         system_prompt_config = {"type": "preset", "preset": "claude_code"}
 
     # TODO: check planning mode
+    # TODO: when in a sandbox, make sure it can't go outside it's directory
     options = ClaudeAgentOptions(
         tools={"type": "preset", "preset": "claude_code"},
         system_prompt=system_prompt_config,
