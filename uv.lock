@@ -10,16 +10,15 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "20260103-155829",
-    "20260103-155957",
-    "20260103-160124",
+    "20260103-175953",
+    "20260109-153140",
     "tinker-agent",
 ]
 
 [[package]]
-name = "20260103-155829"
+name = "20260103-175953"
 version = "0.1.0"
-source = { virtual = "runs/20260103_155829" }
+source = { virtual = "runs/20260103_175953" }
 dependencies = [
     { name = "python-dotenv" },
     { name = "tinker" },
@@ -36,28 +35,9 @@ requires-dist = [
 ]
 
 [[package]]
-name = "20260103-155957"
+name = "20260109-153140"
 version = "0.1.0"
-source = { virtual = "runs/20260103_155957" }
-dependencies = [
-    { name = "python-dotenv" },
-    { name = "tinker" },
-    { name = "tinker-cookbook" },
-    { name = "wandb" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "python-dotenv" },
-    { name = "tinker" },
-    { name = "tinker-cookbook", git = "https://github.com/thinking-machines-lab/tinker-cookbook.git" },
-    { name = "wandb" },
-]
-
-[[package]]
-name = "20260103-160124"
-version = "0.1.0"
-source = { virtual = "runs/20260103_160124" }
+source = { virtual = "runs/20260109_153140" }
 dependencies = [
     { name = "python-dotenv" },
     { name = "tinker" },

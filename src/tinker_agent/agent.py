@@ -13,6 +13,9 @@ from tinker_agent.eval import validate_results
 
 console = Console()
 
+# Track cumulative token usage for debugging
+_total_tool_output_chars = 0
+
 
 @chz.chz
 class Config:
@@ -22,6 +25,47 @@ class Config:
     use_custom_prompt: bool = True
     cwd: str | None = None
     verbose: bool = False
+
+
+async def log_tool_output(input_data, tool_use_id, context):
+    """PostToolUse hook: log tool output size to debug context growth."""
+    global _total_tool_output_chars
+
+    tool_name = input_data.get("tool_name", "unknown")
+    tool_result = input_data.get("tool_result", "")
+
+    # Calculate size of this tool's output
+    result_str = str(tool_result)
+    result_chars = len(result_str)
+    _total_tool_output_chars += result_chars
+
+    # Estimate tokens (~4 chars per token)
+    result_tokens = result_chars // 4
+    total_tokens = _total_tool_output_chars // 4
+
+    # Log with color coding based on size
+    if result_chars > 50000:
+        style = "bold red"
+        warning = " ⚠️ VERY LARGE"
+    elif result_chars > 10000:
+        style = "yellow"
+        warning = " ⚠️ large"
+    else:
+        style = "dim"
+        warning = ""
+
+    console.print(
+        f"[{style}]📊 PostToolUse: {tool_name} | "
+        f"output: {result_chars:,} chars (~{result_tokens:,} tokens){warning} | "
+        f"cumulative: {_total_tool_output_chars:,} chars (~{total_tokens:,} tokens)[/{style}]"
+    )
+
+    # Preview first 200 chars if large
+    if result_chars > 10000:
+        preview = result_str[:200].replace("\n", " ")
+        console.print(f"[dim]   Preview: {preview}...[/dim]")
+
+    return {}
 
 
 async def validate_on_stop(input_data, tool_use_id, context):
@@ -42,6 +86,7 @@ async def validate_on_stop(input_data, tool_use_id, context):
     return {}
 
 
+# TODO: reuse tinker cookbook agents.md
 async def run_agent(config: Config) -> None:
     """Run the post-training agent."""
     system_prompt_config = None
@@ -73,6 +118,7 @@ async def run_agent(config: Config) -> None:
         continue_conversation=False,
         cwd=config.cwd or str(Path.cwd()),
         hooks={
+            "PostToolUse": [HookMatcher(hooks=[log_tool_output])],
             "Stop": [HookMatcher(hooks=[validate_on_stop])],
         },
     )
