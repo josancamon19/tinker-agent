@@ -237,19 +237,11 @@ def find_runs_with_traces(runs_dir: Path) -> list[dict]:
         if run_dir.is_dir():
             trace_file = run_dir / "traces.json"
             if trace_file.exists():
-                try:
-                    with open(trace_file) as f:
-                        traces = json.load(f)
-                        trace_count = len(traces) if isinstance(traces, list) else 1
-                except (json.JSONDecodeError, IOError):
-                    trace_count = 0
-
                 runs.append(
                     {
                         "name": run_dir.name,
                         "path": run_dir,
                         "trace_file": trace_file,
-                        "trace_count": trace_count,
                     }
                 )
     return runs
@@ -270,6 +262,36 @@ def fmt_time(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%H:%M:%S")
 
 
+def fmt_relative_time(dt: datetime) -> str:
+    """Format relative time (e.g., '5 minutes ago', 'yesterday')."""
+    now = datetime.now()
+    diff = now - dt
+
+    seconds = diff.total_seconds()
+
+    if seconds < 60:
+        return f"{int(seconds)}s ago"
+    elif seconds < 3600:
+        minutes = int(seconds / 60)
+        return f"{minutes}m ago"
+    elif seconds < 86400:
+        hours = int(seconds / 3600)
+        return f"{hours}h ago"
+    elif seconds < 172800:  # Less than 2 days
+        return "yesterday"
+    else:
+        days = int(seconds / 86400)
+        return f"{days}d ago"
+
+
+def parse_run_name(name: str) -> datetime | None:
+    """Parse run directory name (YYYYMMDD_HHMMSS) to datetime."""
+    try:
+        return datetime.strptime(name, "%Y%m%d_%H%M%S")
+    except ValueError:
+        return None
+
+
 def fmt_timeout(ms: int) -> str:
     """Format timeout in human-readable form."""
     if ms >= 60000:
@@ -278,7 +300,9 @@ def fmt_timeout(ms: int) -> str:
     return f"{ms // 1000}s"
 
 
-def render_bash_tool_call(tool_input: dict, time_str: str):
+def render_bash_tool_call(
+    tool_input: dict, time_str: str, is_pending: bool = False, log_file: str | None = None
+):
     """Render a Bash tool call with clean, compact UI."""
     command = tool_input.get("command", "")
     description = tool_input.get("description", "")
@@ -290,12 +314,19 @@ def render_bash_tool_call(tool_input: dict, time_str: str):
         badges.append(f"⏱ {fmt_timeout(timeout)}")
     if run_in_bg:
         badges.append("⚡ bg")
+    if log_file and is_pending:
+        badges.append("📡 streaming")
 
     badge_html = " ".join(f"<span class='tool-badge'>{b}</span>" for b in badges)
     desc_html = f"<span class='tool-desc'>{description}</span>" if description else ""
 
+    # Show waiting indicator if pending
+    waiting_html = ""
+    if is_pending and timeout:
+        waiting_html = "<span style='color: #d29922; margin-left: 8px;'>⏳ running...</span>"
+
     st.markdown(
-        f"<div class='tool-header'><span class='tool-name-badge bash'>Bash</span> {desc_html} <span class='tool-meta'>{badge_html} <span class='tool-time'>{time_str}</span></span></div>",
+        f"<div class='tool-header'><span class='tool-name-badge bash'>Bash</span> {desc_html} {waiting_html}<span class='tool-meta'>{badge_html} <span class='tool-time'>{time_str}</span></span></div>",
         unsafe_allow_html=True,
     )
 
@@ -306,6 +337,35 @@ def render_bash_tool_call(tool_input: dict, time_str: str):
         if display_command.startswith("("):
             display_command = display_command[1:]
     st.code(display_command, language="bash")
+
+    # Show live streaming output if pending and log file exists
+    if is_pending and log_file:
+        log_path = Path(log_file)
+        if log_path.exists():
+            try:
+                log_content = log_path.read_text()
+                if log_content:
+                    # Show last N lines of output
+                    lines = log_content.splitlines()
+                    max_lines = 50
+                    if len(lines) > max_lines:
+                        display_lines = lines[-max_lines:]
+                        truncated_msg = f"... [{len(lines) - max_lines} earlier lines]\n"
+                    else:
+                        display_lines = lines
+                        truncated_msg = ""
+
+                    st.markdown(
+                        f"<div class='cli-output' style='border-left-color: #d29922;'><pre>{truncated_msg}{_escape_html(chr(10).join(display_lines))}</pre></div>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        "<div class='cli-output empty' style='border-left-color: #d29922;'>⏳ Waiting for output...</div>",
+                        unsafe_allow_html=True,
+                    )
+            except Exception:
+                pass
 
 
 def render_todo_tool_call(tool_input: dict, time_str: str):
@@ -436,11 +496,18 @@ def render_tool_result(result: str, tool_name: str, is_error: bool, time_str: st
         st.markdown("<div class='cli-output empty'>✓</div>", unsafe_allow_html=True)
 
 
-def render_event(event: dict):
+def render_event(
+    event: dict,
+    completed_tool_ids: set | None = None,
+    trace_ended: bool = True,
+    stream_log_files: dict | None = None,
+):
     """Render a single event compactly."""
     etype = event.get("type", "unknown")
     ts = event.get("timestamp", 0)
     data = event.get("data", {})
+    completed_tool_ids = completed_tool_ids or set()
+    stream_log_files = stream_log_files or {}
 
     icons = {
         "message": "💬",
@@ -467,9 +534,27 @@ def render_event(event: dict):
     elif etype == "tool_call":
         tool_name = data.get("tool_name", "unknown")
         tool_input = data.get("tool_input", {})
+        tool_id = data.get("tool_id", "")
+
+        # Check if this tool call is still pending (no result yet)
+        is_pending = tool_id not in completed_tool_ids and not trace_ended
+
+        # Get streaming log file if available
+        log_file = None
+        if tool_name.lower() in {"bash", "shell", "execute", "run"}:
+            command = tool_input.get("command", "")
+            # Extract original command if wrapped with tee
+            original_cmd = command
+            if "| stdbuf -oL tee" in command and ") 2>&1 |" in command:
+                original_cmd = command.split(") 2>&1 |")[0]
+                if original_cmd.startswith("("):
+                    original_cmd = original_cmd[1:]
+            log_file = stream_log_files.get(original_cmd)
 
         if tool_name.lower() in {"bash", "shell", "execute", "run"}:
-            render_bash_tool_call(tool_input, time_str)
+            render_bash_tool_call(
+                tool_input, time_str, is_pending=is_pending, log_file=log_file
+            )
         elif tool_name.lower() in {"todowrite", "todo_write", "todo"}:
             render_todo_tool_call(tool_input, time_str)
         elif len(tool_input) == 1:
@@ -547,8 +632,32 @@ def render_trace(trace: dict):
 
     st.markdown(f"**📝 Prompt:** {prompt}")
 
+    # Build set of tool_call IDs that have received results
+    completed_tool_ids = set()
     for event in events:
-        render_event(event)
+        if event.get("type") == "tool_result":
+            tool_id = event.get("data", {}).get("tool_id")
+            if tool_id:
+                completed_tool_ids.add(tool_id)
+
+    # Build mapping of original_command -> log_file from bash_stream_start events
+    stream_log_files = {}
+    for event in events:
+        if event.get("type") == "bash_stream_start":
+            data = event.get("data", {})
+            original_command = data.get("original_command")
+            log_file = data.get("log_file")
+            if original_command and log_file:
+                stream_log_files[original_command] = log_file
+
+    # Events
+    for event in events:
+        render_event(
+            event,
+            completed_tool_ids=completed_tool_ids,
+            trace_ended=ended is not None,
+            stream_log_files=stream_log_files,
+        )
 
     if trace.get("error"):
         st.error(f"❌ {trace['error']}")
@@ -640,8 +749,13 @@ def main():
             for run in runs:
                 name = run["name"]
                 is_sel = st.session_state.selected_run == name
+
+                # Parse timestamp and format as relative time
+                dt = parse_run_name(name)
+                display_name = fmt_relative_time(dt) if dt else name
+
                 if st.button(
-                    f"{'▶' if is_sel else '○'} {name} ({run['trace_count']})",
+                    f"{'▶' if is_sel else '○'} {display_name}",
                     key=f"r_{name}",
                     use_container_width=True,
                     type="primary" if is_sel else "secondary",

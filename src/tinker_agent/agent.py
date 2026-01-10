@@ -267,6 +267,16 @@ def _create_can_use_tool_handler(
         if tool_name.lower() not in {"bash", "shell", "execute", "run"}:
             return PermissionResultAllow(updated_input=input_data)
 
+        # Activate virtual environment for all bash commands
+        command = input_data.get("command", "")
+        if command and root_dir:
+            venv_path = root_dir / ".venv"
+            activate_script = venv_path / "bin" / "activate"
+            if activate_script.exists():
+                # Prepend venv activation to command
+                command = f"source {activate_script} && {command}"
+                input_data = {**input_data, "command": command}
+
         timeout = input_data.get("timeout", 0)
         if timeout < MIN_TIMEOUT_FOR_STREAMING:
             return PermissionResultAllow(updated_input=input_data)
@@ -276,7 +286,9 @@ def _create_can_use_tool_handler(
             return PermissionResultAllow(updated_input=input_data)
 
         # Create log directory in the run directory
-        bash_logs_dir = root_dir / "bash_logs" if root_dir else Path("/tmp/tinker_bash_logs")
+        bash_logs_dir = (
+            root_dir / "bash_logs" if root_dir else Path("/tmp/tinker_bash_logs")
+        )
         bash_logs_dir.mkdir(parents=True, exist_ok=True)
 
         # Create unique log file for this tool call (use timestamp + hash since we don't have tool_use_id here)

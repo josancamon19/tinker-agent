@@ -8,12 +8,45 @@ from pathlib import Path
 
 import chz
 from rich.console import Console
+from rich.live import Live
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
 from rich.text import Text
+from rich.align import Align
 
 console = Console()
+
+
+def show_welcome_animation():
+    """Display welcome screen."""
+    # Welcome message
+    message = Text()
+    message.append("Welcome to ", style="bold cyan")
+    message.append("tinker-agent", style="bold yellow")
+    message.append("\nPost training agent for @thinkymachines Tinker platform", style="dim")
+
+    # Warning message
+    warning = Text()
+    warning.append("\n\n⚠️  Preview Release\n", style="bold yellow")
+    warning.append("• Claude is sandboxed to prevent access outside its directory\n", style="dim")
+    warning.append("• Some bypass permissions exist for system operations\n", style="dim")
+    warning.append("• Use with caution in production environments", style="dim")
+
+    # Combine everything
+    content = Text()
+    content.append(message)
+    content.append(warning)
+
+    panel = Panel(
+        Align.center(content),
+        border_style="cyan",
+        padding=(1, 2),
+    )
+
+    console.print()
+    console.print(panel)
+    console.print()
 
 
 def is_viewer_running() -> bool:
@@ -516,6 +549,9 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "viewer":
         viewer()
         return
+
+    # Show welcome animation
+    show_welcome_animation()
 
     # Check if running with chz arguments (non-interactive)
     if len(sys.argv) > 1 and "=" in sys.argv[1]:

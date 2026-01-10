@@ -74,6 +74,8 @@ PYPROJECT_DEPENDENCIES = """dependencies = [
     "tinker-cookbook",
     "wandb",
     "python-dotenv",
+    "datasets",
+    "numpy",
 ]
 """
 
