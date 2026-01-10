@@ -160,6 +160,71 @@ st.markdown(
         max-height: 400px;
         overflow-y: auto;
     }
+
+    /* Generic tool call styling */
+    .tool-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 0;
+        font-size: 0.85rem;
+        flex-wrap: wrap;
+    }
+    .tool-name-badge {
+        color: white;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-family: monospace;
+        font-weight: bold;
+        font-size: 0.8rem;
+    }
+    .tool-name-badge.bash { background: #238636; }
+    .tool-name-badge.todo { background: #8957e5; }
+    .tool-desc {
+        color: #8b949e;
+        font-style: italic;
+    }
+    .tool-meta {
+        margin-left: auto;
+        display: flex;
+        gap: 6px;
+        align-items: center;
+    }
+    .tool-badge {
+        background: #30363d;
+        color: #8b949e;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-family: monospace;
+    }
+    .tool-time {
+        color: #6e7681;
+        font-size: 0.8rem;
+    }
+
+    /* Todo list styling */
+    .todo-list {
+        background: #161b22;
+        border-radius: 6px;
+        padding: 8px 12px;
+        margin: 4px 0;
+    }
+    .todo-item {
+        padding: 4px 0;
+        font-size: 0.85rem;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .todo-icon {
+        font-family: monospace;
+        width: 16px;
+        text-align: center;
+    }
+    .todo-item.completed { color: #3fb950; }
+    .todo-item.in-progress { color: #58a6ff; }
+    .todo-item.pending { color: #8b949e; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -209,6 +274,80 @@ def fmt_time(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%H:%M:%S")
 
 
+def fmt_timeout(ms: int) -> str:
+    """Format timeout in human-readable form."""
+    if ms >= 60000:
+        mins = ms // 60000
+        return f"{mins}m"
+    return f"{ms // 1000}s"
+
+
+def render_bash_tool_call(tool_input: dict, time_str: str):
+    """Render a Bash tool call with clean, compact UI."""
+    command = tool_input.get("command", "")
+    description = tool_input.get("description", "")
+    timeout = tool_input.get("timeout")
+    run_in_bg = tool_input.get("run_in_background", False)
+
+    # Build metadata badges
+    badges = []
+    if timeout:
+        badges.append(f"⏱ {fmt_timeout(timeout)}")
+    if run_in_bg:
+        badges.append("⚡ bg")
+
+    badge_html = " ".join(f"<span class='tool-badge'>{b}</span>" for b in badges)
+
+    # Header with description and badges
+    desc_html = f"<span class='tool-desc'>{description}</span>" if description else ""
+
+    st.markdown(
+        f"""<div class='tool-header'>
+            <span class='tool-name-badge bash'>Bash</span>
+            {desc_html}
+            <span class='tool-meta'>{badge_html} <span class='tool-time'>{time_str}</span></span>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+    # Command in a code block
+    st.code(command, language="bash")
+
+
+def render_todo_tool_call(tool_input: dict, time_str: str):
+    """Render a TodoWrite tool call with clean checklist UI."""
+    todos = tool_input.get("todos", [])
+
+    # Count by status
+    in_progress = sum(1 for t in todos if t.get("status") == "in_progress")
+    completed = sum(1 for t in todos if t.get("status") == "completed")
+    pending = sum(1 for t in todos if t.get("status") == "pending")
+
+    # Summary badge
+    summary = f"{completed}✓ {in_progress}→ {pending}○"
+
+    st.markdown(
+        f"""<div class='tool-header'>
+            <span class='tool-name-badge todo'>Todo</span>
+            <span class='tool-desc'>{len(todos)} items</span>
+            <span class='tool-meta'><span class='tool-badge'>{summary}</span> <span class='tool-time'>{time_str}</span></span>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+    # Render todos as compact list
+    todo_html = "<div class='todo-list'>"
+    for todo in todos:
+        status = todo.get("status", "pending")
+        content = todo.get("content", "")
+        icon = {"completed": "✓", "in_progress": "→", "pending": "○"}.get(status, "○")
+        status_class = status.replace("_", "-")
+        todo_html += f"<div class='todo-item {status_class}'><span class='todo-icon'>{icon}</span> {content}</div>"
+    todo_html += "</div>"
+
+    st.markdown(todo_html, unsafe_allow_html=True)
+
+
 def render_event(event: dict):
     """Render a single event compactly."""
     etype = event.get("type", "unknown")
@@ -241,8 +380,13 @@ def render_event(event: dict):
         tool_name = data.get("tool_name", "unknown")
         tool_input = data.get("tool_input", {})
 
+        # Special rendering for specific tools
+        if tool_name.lower() in {"bash", "shell", "execute", "run"}:
+            render_bash_tool_call(tool_input, time_str)
+        elif tool_name.lower() in {"todowrite", "todo_write", "todo"}:
+            render_todo_tool_call(tool_input, time_str)
         # Single param and short value -> inline
-        if len(tool_input) == 1:
+        elif len(tool_input) == 1:
             key, val = list(tool_input.items())[0]
             val_str = json.dumps(val) if not isinstance(val, str) else val
             if len(val_str) < 200:
@@ -355,6 +499,61 @@ def render_trace(trace: dict):
     if trace.get("error"):
         st.error(f"❌ {trace['error']}")
 
+    # Auto-scroll: track event count and scroll when new events appear
+    event_count = len(events)
+    prev_count = st.session_state.get("prev_event_count", 0)
+    is_live = not ended  # Still running
+
+    if event_count > prev_count or (is_live and event_count > 0):
+        st.session_state.prev_event_count = event_count
+        # Inject scroll script via components
+        import streamlit.components.v1 as components
+
+        components.html(
+            f"""
+            <script>
+                console.log('[Trace Viewer] Attempting scroll, events: {event_count}');
+                (function() {{
+                    function scrollToBottom() {{
+                        const parent = window.parent;
+                        if (!parent) {{
+                            console.log('[Trace Viewer] No parent window');
+                            return;
+                        }}
+                        // Find the scrollable main area
+                        const doc = parent.document;
+                        const selectors = [
+                            '[data-testid="stAppViewContainer"]',
+                            '[data-testid="stMain"]',
+                            'section.stMain',
+                            'section.main',
+                            '.main',
+                            '.block-container'
+                        ];
+                        for (const sel of selectors) {{
+                            const el = doc.querySelector(sel);
+                            if (el) {{
+                                console.log('[Trace Viewer] Found:', sel, 'scrollHeight:', el.scrollHeight, 'clientHeight:', el.clientHeight);
+                                if (el.scrollHeight > el.clientHeight) {{
+                                    el.scrollTop = el.scrollHeight;
+                                    console.log('[Trace Viewer] Scrolled via', sel);
+                                    return;
+                                }}
+                            }}
+                        }}
+                        // Try scrolling body and html
+                        doc.body.scrollTop = doc.body.scrollHeight;
+                        doc.documentElement.scrollTop = doc.documentElement.scrollHeight;
+                        parent.scrollTo(0, doc.documentElement.scrollHeight);
+                        console.log('[Trace Viewer] Used body/window scroll');
+                    }}
+                    setTimeout(scrollToBottom, 150);
+                }})();
+            </script>
+            """,
+            height=1,
+        )
+
 
 def main():
     # Find project root
@@ -398,6 +597,7 @@ def main():
                 ):
                     st.session_state.selected_run = name
                     st.session_state.trace_idx = 0
+                    st.session_state.prev_event_count = 0  # Reset scroll tracking
                     st.rerun()
 
     # Main area
@@ -417,6 +617,8 @@ def main():
                         format_func=lambda i: f"{traces[i].get('id', '?')}: {traces[i].get('prompt', '')[:40]}...",
                         label_visibility="collapsed",
                     )
+                    if idx != st.session_state.trace_idx:
+                        st.session_state.prev_event_count = 0  # Reset scroll tracking
                     st.session_state.trace_idx = idx
                 else:
                     idx = 0
@@ -433,10 +635,13 @@ def main():
     # Auto-refresh using streamlit-autorefresh (more reliable than JS/meta refresh)
     try:
         from streamlit_autorefresh import st_autorefresh
+
         st_autorefresh(interval=500, key="trace_refresh")
     except ImportError:
         # Fallback: manual refresh hint
-        st.caption("Install `streamlit-autorefresh` for auto-refresh: `pip install streamlit-autorefresh`")
+        st.caption(
+            "Install `streamlit-autorefresh` for auto-refresh: `pip install streamlit-autorefresh`"
+        )
 
 
 if __name__ == "__main__":

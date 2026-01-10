@@ -31,8 +31,5 @@ asyncio_mode = "auto"
 
 [tool.uv.workspace]
 members = [
-    "runs/20260109_163529",
-    "runs/20260109_202715",
-    "runs/20260109_203839",
-    "runs/20260109_203850",
+    "runs/20260109_204441",
 ]
