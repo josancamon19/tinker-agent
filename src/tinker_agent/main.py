@@ -30,10 +30,10 @@ def update_runs_index(project_root: Path) -> None:
     """Update runs/index.json with all runs that have traces."""
     runs_dir = project_root / "runs"
     index_path = runs_dir / "index.json"
-    
+
     if not runs_dir.exists():
         return
-    
+
     index = {}
     for run_dir in runs_dir.iterdir():
         if run_dir.is_dir() and (run_dir / "traces.json").exists():
@@ -46,12 +46,12 @@ def update_runs_index(project_root: Path) -> None:
                         trace_count = len(traces)
             except:
                 pass
-            
+
             index[run_dir.name] = {
                 "path": f"runs/{run_dir.name}",
                 "traceCount": trace_count,
             }
-    
+
     with open(index_path, "w") as f:
         json.dump(index, f, indent=2)
 
@@ -67,6 +67,7 @@ def start_trace_server(project_root: Path, port: int = 8765) -> int:
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
     return port
+
 
 PYPROJECT_DEPENDENCIES = """dependencies = [
     "tinker",
@@ -166,9 +167,17 @@ def main() -> None:
                 webbrowser.open(viewer_url)
                 continue
 
-            config = Config(prompt=prompt, cwd=str(runs_dir), trace_path=str(trace_path))
-            asyncio.run(run_agent(config))
-            
+            config = Config(
+                prompt=prompt, cwd=str(runs_dir), trace_path=str(trace_path)
+            )
+            try:
+                asyncio.run(run_agent(config))
+            except Exception as e:
+                # Agent crashed - offer to continue with error context
+                console.print(
+                    f"\n[dim]Agent crashed. You can continue with a follow-up prompt.[/dim]"
+                )
+
             # Update index after each run
             update_runs_index(project_root)
 

@@ -67,18 +67,33 @@ class Config:
 def _create_log_tool_output_hook(session_id: str, tracer: Tracer | None = None):
     """Factory: creates a PostToolUse hook bound to a specific session."""
 
+    # Tools that execute commands and produce stdout/stderr
+    COMMAND_TOOLS = {
+        "Bash",
+        "bash",
+        "Shell",
+        "shell",
+        "Execute",
+        "execute",
+        "Run",
+        "run",
+    }
+
     async def log_tool_output(input_data, tool_use_id, context):
         """PostToolUse hook: log tool output size to debug context growth."""
         state = _session_state.get(session_id, {})
 
         tool_name = input_data.get("tool_name", "unknown")
         tool_result = input_data.get("tool_result", "")
+        is_error = input_data.get("is_error", False)
 
         # Log to tracer (captures the actual tool output!)
         if tracer:
-            is_error = input_data.get("is_error", False)
             tracer.log_tool_result(
-                tool_id=tool_use_id, result=tool_result, is_error=is_error
+                tool_id=tool_use_id,
+                result=tool_result,
+                is_error=is_error,
+                tool_name=tool_name,
             )
 
         # Calculate size of this tool's output
@@ -108,8 +123,28 @@ def _create_log_tool_output_hook(session_id: str, tracer: Tracer | None = None):
             f"cumulative: {state['tool_output_chars']:,} chars (~{total_tokens:,} tokens)[/{style}]"
         )
 
-        # Preview first 200 chars if large
-        if result_chars > 10000:
+        # For command tools (Bash, etc.), show the actual stdout/stderr output
+        if tool_name in COMMAND_TOOLS and result_str:
+            # Show up to 2000 chars of command output
+            output_preview = result_str[:2000]
+            if len(result_str) > 2000:
+                output_preview += f"\n... [{len(result_str) - 2000:,} more chars]"
+
+            border_style = "red" if is_error else "blue"
+            title = (
+                "[bold red]stderr/error[/bold red]"
+                if is_error
+                else "[bold blue]stdout[/bold blue]"
+            )
+            console.print(
+                Panel(
+                    output_preview,
+                    title=title,
+                    border_style=border_style,
+                )
+            )
+        # Preview first 200 chars if large (for non-command tools)
+        elif result_chars > 10000:
             preview = result_str[:200].replace("\n", " ")
             console.print(f"[dim]   Preview: {preview}...[/dim]")
 
@@ -238,6 +273,7 @@ async def run_agent(config: Config) -> None:
 
     result_text = None
     error_text = None
+    cwd_path = Path(config.cwd) if config.cwd else None
     try:
         async for message in query(prompt=config.prompt, options=options):
             _print_message(message, verbose=config.verbose)
@@ -249,6 +285,24 @@ async def run_agent(config: Config) -> None:
                     result_text = message.result
     except Exception as e:
         error_text = str(e)
+        # On error/crash, run validation to check if we should continue
+        # (The Stop hook only runs when Claude decides to stop, NOT on errors!)
+        console.print(f"[red]Agent error: {error_text}[/red]")
+
+        # Check validation state - if task incomplete, give user option to continue
+        results_dir = _find_latest_results_dir(cwd_path)
+        if results_dir:
+            result = validate_results(results_dir)
+            if not result.valid:
+                console.print(
+                    Panel(
+                        "[bold yellow]Agent crashed but task appears incomplete.[/bold yellow]\n\n"
+                        "Validation errors:\n"
+                        + "\n".join(f"  • {e}" for e in result.errors[:5]),
+                        title="[bold yellow]⚠️ Incomplete Task[/bold yellow]",
+                        border_style="yellow",
+                    )
+                )
         raise
     finally:
         # End trace

@@ -79,7 +79,7 @@ class Tracer:
         )
 
     def log_tool_result(
-        self, tool_id: str, result: Any, is_error: bool = False
+        self, tool_id: str, result: Any, is_error: bool = False, tool_name: str = ""
     ) -> None:
         """Log a tool result event."""
         # Truncate large results for storage
@@ -89,7 +89,7 @@ class Tracer:
 
         self.add_event(
             "tool_result",
-            {"tool_id": tool_id, "result": result_str, "is_error": is_error},
+            {"tool_id": tool_id, "result": result_str, "is_error": is_error, "tool_name": tool_name},
         )
 
     def log_thinking(self, thinking: str) -> None:

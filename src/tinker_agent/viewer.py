@@ -1,7 +1,6 @@
 """Streamlit trace viewer for agent executions."""
 
 import json
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -141,6 +140,26 @@ st.markdown(
         white-space: pre !important;
         overflow-x: auto !important;
     }
+    
+    /* Command output (stdout/stderr) styling */
+    .stdout-output {
+        background: #0d1117;
+        border-left: 3px solid #58a6ff;
+        padding: 8px;
+        font-family: monospace;
+        font-size: 0.85rem;
+        max-height: 400px;
+        overflow-y: auto;
+    }
+    .stderr-output {
+        background: #1a0d0d;
+        border-left: 3px solid #f85149;
+        padding: 8px;
+        font-family: monospace;
+        font-size: 0.85rem;
+        max-height: 400px;
+        overflow-y: auto;
+    }
 </style>
 """,
     unsafe_allow_html=True,
@@ -164,12 +183,14 @@ def find_runs_with_traces(runs_dir: Path) -> list[dict]:
                 except (json.JSONDecodeError, IOError):
                     trace_count = 0
 
-                runs.append({
-                    "name": run_dir.name,
-                    "path": run_dir,
-                    "trace_file": trace_file,
-                    "trace_count": trace_count,
-                })
+                runs.append(
+                    {
+                        "name": run_dir.name,
+                        "path": run_dir,
+                        "trace_file": trace_file,
+                        "trace_count": trace_count,
+                    }
+                )
     return runs
 
 
@@ -193,35 +214,54 @@ def render_event(event: dict):
     etype = event.get("type", "unknown")
     ts = event.get("timestamp", 0)
     data = event.get("data", {})
-    
+
     icons = {
-        "message": "💬", "tool_call": "🔧", "tool_result": "📋",
-        "thinking": "🧠", "error": "❌", "stop": "⏹", "result": "✅"
+        "message": "💬",
+        "tool_call": "🔧",
+        "tool_result": "📋",
+        "thinking": "🧠",
+        "error": "❌",
+        "stop": "⏹",
+        "result": "✅",
     }
     icon = icons.get(etype, "•")
     time_str = fmt_time(ts) if ts else ""
 
     if etype == "message":
         content = data.get("content", "")
-        st.markdown(f"<div class='event-header'>{icon} <b>Assistant</b> <span>{time_str}</span></div>", unsafe_allow_html=True)
-        st.markdown(f"<div class='msg-assistant'>{content}</div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<div class='event-header'>{icon} <b>Assistant</b> <span>{time_str}</span></div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div class='msg-assistant'>{content}</div>", unsafe_allow_html=True
+        )
 
     elif etype == "tool_call":
         tool_name = data.get("tool_name", "unknown")
         tool_input = data.get("tool_input", {})
-        
+
         # Single param and short value -> inline
         if len(tool_input) == 1:
             key, val = list(tool_input.items())[0]
             val_str = json.dumps(val) if not isinstance(val, str) else val
             if len(val_str) < 200:
-                st.markdown(f"<div class='event-header'>{icon} <span class='tool-name'>{tool_name}</span> <code>{key}={val_str}</code> <span>{time_str}</span></div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div class='event-header'>{icon} <span class='tool-name'>{tool_name}</span> <code>{key}={val_str}</code> <span>{time_str}</span></div>",
+                    unsafe_allow_html=True,
+                )
             else:
-                st.markdown(f"<div class='event-header'>{icon} <span class='tool-name'>{tool_name}</span> <span>{time_str}</span></div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div class='event-header'>{icon} <span class='tool-name'>{tool_name}</span> <span>{time_str}</span></div>",
+                    unsafe_allow_html=True,
+                )
                 st.code(json.dumps(tool_input, indent=2), language="json")
         else:
             input_str = json.dumps(tool_input, indent=2)
-            st.markdown(f"<div class='event-header'>{icon} <span class='tool-name'>{tool_name}</span> <span>{time_str}</span></div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div class='event-header'>{icon} <span class='tool-name'>{tool_name}</span> <span>{time_str}</span></div>",
+                unsafe_allow_html=True,
+            )
             if len(input_str) < 1000:
                 st.code(input_str, language="json")
             else:
@@ -231,9 +271,34 @@ def render_event(event: dict):
     elif etype == "tool_result":
         result = data.get("result", "")
         is_error = data.get("is_error", False)
-        st.markdown(f"<div class='event-header'>{icon} Result {'❌' if is_error else ''} <span>{time_str}</span></div>", unsafe_allow_html=True)
-        with st.expander("Output", expanded=False):
-            st.code(result[:3000] + ("..." if len(result) > 3000 else ""), language=None)
+        tool_name = data.get("tool_name", "")
+
+        # Command tools (Bash, Shell, etc.) show output expanded
+        is_command_tool = tool_name.lower() in {"bash", "shell", "execute", "run"}
+
+        if is_command_tool:
+            # Show command output prominently
+            icon_display = "🔴" if is_error else "📺"
+            label = "stderr" if is_error else "stdout"
+            st.markdown(
+                f"<div class='event-header'>{icon_display} <b>{label}</b> <span>{time_str}</span></div>",
+                unsafe_allow_html=True,
+            )
+            # Show first 5000 chars expanded for command output
+            display_result = result[:5000] + (
+                "\n... [truncated]" if len(result) > 5000 else ""
+            )
+            st.code(display_result, language="bash")
+        else:
+            # Other tools: show collapsed
+            st.markdown(
+                f"<div class='event-header'>{icon} Result {'❌' if is_error else ''} <span>{time_str}</span></div>",
+                unsafe_allow_html=True,
+            )
+            with st.expander("Output", expanded=False):
+                st.code(
+                    result[:3000] + ("..." if len(result) > 3000 else ""), language=None
+                )
 
     elif etype == "thinking":
         content = data.get("content", "")
@@ -258,10 +323,16 @@ def render_trace(trace: dict):
     started = trace.get("started_at", "")
     ended = trace.get("ended_at")
     events = trace.get("events", [])
-    
+
     # Status
-    status = "✅" if ended and not trace.get("error") else "❌" if trace.get("error") else "🔄"
-    
+    status = (
+        "✅"
+        if ended and not trace.get("error")
+        else "❌"
+        if trace.get("error")
+        else "🔄"
+    )
+
     # Header row
     cols = st.columns([4, 2, 2])
     with cols[0]:
@@ -270,14 +341,14 @@ def render_trace(trace: dict):
         st.caption(f"Started: {started[:19] if started else '?'}")
     with cols[2]:
         st.caption(f"Events: {len(events)}")
-    
+
     # Prompt
     st.markdown(f"**📝 Prompt:** {prompt}")
-    
+
     # Events
     for event in events:
         render_event(event)
-    
+
     # Final result/error
     if trace.get("result"):
         st.success(f"✅ {trace['result'][:500]}")
@@ -288,7 +359,13 @@ def render_trace(trace: dict):
 def main():
     # Find project root
     cwd = Path.cwd()
-    project_root = cwd if (cwd / "runs").exists() else cwd.parent if (cwd.parent / "runs").exists() else cwd
+    project_root = (
+        cwd
+        if (cwd / "runs").exists()
+        else cwd.parent
+        if (cwd.parent / "runs").exists()
+        else cwd
+    )
     runs_dir = project_root / "runs"
 
     # Session state
@@ -296,26 +373,17 @@ def main():
         st.session_state.selected_run = None
     if "trace_idx" not in st.session_state:
         st.session_state.trace_idx = 0
-    if "last_refresh" not in st.session_state:
-        st.session_state.last_refresh = time.time()
 
     # Sidebar
     with st.sidebar:
         st.markdown("## 🔍 Traces")
-        
-        # Refresh
-        cols = st.columns([2, 1])
-        with cols[0]:
-            interval = st.selectbox("↻", [2, 5, 10, 30], index=1, format_func=lambda x: f"{x}s", label_visibility="collapsed")
-        with cols[1]:
-            if st.button("🔄"):
-                st.rerun()
-        
+        st.caption("Auto-refresh: 500ms")
+
         st.divider()
-        
+
         # Runs list
         runs = find_runs_with_traces(runs_dir)
-        
+
         if not runs:
             st.caption(f"No traces in {runs_dir}")
         else:
@@ -335,10 +403,10 @@ def main():
     # Main area
     if st.session_state.selected_run:
         trace_file = runs_dir / st.session_state.selected_run / "traces.json"
-        
+
         if trace_file.exists():
             traces = load_traces(trace_file)
-            
+
             if traces:
                 # Trace selector for multiple traces
                 if len(traces) > 1:
@@ -352,7 +420,7 @@ def main():
                     st.session_state.trace_idx = idx
                 else:
                     idx = 0
-                
+
                 render_trace(traces[idx])
             else:
                 st.warning("Empty trace file")
@@ -362,11 +430,13 @@ def main():
         st.markdown("### 👈 Select a run")
         st.caption("Auto-refreshes to show live execution")
 
-    # Auto-refresh
-    if time.time() - st.session_state.last_refresh >= interval:
-        st.session_state.last_refresh = time.time()
-        time.sleep(0.1)
-        st.rerun()
+    # Auto-refresh using streamlit-autorefresh (more reliable than JS/meta refresh)
+    try:
+        from streamlit_autorefresh import st_autorefresh
+        st_autorefresh(interval=500, key="trace_refresh")
+    except ImportError:
+        # Fallback: manual refresh hint
+        st.caption("Install `streamlit-autorefresh` for auto-refresh: `pip install streamlit-autorefresh`")
 
 
 if __name__ == "__main__":

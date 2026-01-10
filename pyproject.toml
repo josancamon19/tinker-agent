@@ -10,6 +10,8 @@ dependencies = [
     "daytona>=0.128.1",
     "rich>=14.2.0",
     "streamlit>=1.40.0",
+    "streamlit-autorefresh>=1.0.1",
+    "watchdog>=6.0.0",
 ]
 
 [project.optional-dependencies]
@@ -30,4 +32,7 @@ asyncio_mode = "auto"
 [tool.uv.workspace]
 members = [
     "runs/20260109_163529",
+    "runs/20260109_202715",
+    "runs/20260109_203839",
+    "runs/20260109_203850",
 ]

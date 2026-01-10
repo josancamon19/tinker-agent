@@ -4,23 +4,49 @@ import json
 from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
-from tinker_agent.agent import validate_on_stop, log_tool_output, MAX_VALIDATION_RETRIES
+from tinker_agent.agent import (
+    _create_validate_on_stop_hook,
+    _create_log_tool_output_hook,
+    MAX_VALIDATION_RETRIES,
+    _session_state,
+)
 from tinker_agent.eval import ValidationResult
 import tinker_agent.agent as agent_module
+
+
+# Test session ID for isolation
+TEST_SESSION_ID = "test-session-123"
 
 
 @pytest.fixture(autouse=True)
 def reset_agent_globals():
     """Reset global state before each test to prevent test pollution."""
-    agent_module._validation_retry_count = 0
-    agent_module._total_tool_output_chars = 0
+    agent_module._session_state.clear()
+    agent_module._session_state[TEST_SESSION_ID] = {
+        "tool_output_chars": 0,
+        "validation_retries": 0,
+    }
     yield
-    agent_module._validation_retry_count = 0
-    agent_module._total_tool_output_chars = 0
+    agent_module._session_state.clear()
+
+
+def get_session_retry_count():
+    """Helper to get retry count from session state."""
+    return agent_module._session_state.get(TEST_SESSION_ID, {}).get("validation_retries", 0)
+
+
+def get_session_tool_output_chars():
+    """Helper to get tool output chars from session state."""
+    return agent_module._session_state.get(TEST_SESSION_ID, {}).get("tool_output_chars", 0)
 
 
 class TestValidateOnStopHook:
     """Tests for the validate_on_stop hook function."""
+
+    @pytest.fixture
+    def validate_on_stop(self):
+        """Create a validate_on_stop hook for testing."""
+        return _create_validate_on_stop_hook(TEST_SESSION_ID)
 
     @pytest.fixture
     def mock_input_data(self):
@@ -138,7 +164,7 @@ class TestValidateOnStopHook:
 
     @pytest.mark.asyncio
     async def test_hook_allows_stop_when_valid(
-        self, mock_input_data, valid_results_dir, monkeypatch
+        self, validate_on_stop, mock_input_data, valid_results_dir, monkeypatch
     ):
         """Hook should return empty dict when validation passes."""
         monkeypatch.chdir(valid_results_dir)
@@ -149,7 +175,7 @@ class TestValidateOnStopHook:
 
     @pytest.mark.asyncio
     async def test_hook_continues_when_missing_files(
-        self, mock_input_data, invalid_results_dir, monkeypatch
+        self, validate_on_stop, mock_input_data, invalid_results_dir, monkeypatch
     ):
         """Hook should return continue decision when files are missing."""
         monkeypatch.chdir(invalid_results_dir)
@@ -164,7 +190,7 @@ class TestValidateOnStopHook:
 
     @pytest.mark.asyncio
     async def test_hook_continues_when_trained_not_better(
-        self, mock_input_data, trained_not_better_dir, monkeypatch
+        self, validate_on_stop, mock_input_data, trained_not_better_dir, monkeypatch
     ):
         """Hook should return continue decision when trained model isn't better."""
         monkeypatch.chdir(trained_not_better_dir)
@@ -178,7 +204,7 @@ class TestValidateOnStopHook:
 
     @pytest.mark.asyncio
     async def test_hook_includes_error_summary(
-        self, mock_input_data, invalid_results_dir, monkeypatch
+        self, validate_on_stop, mock_input_data, invalid_results_dir, monkeypatch
     ):
         """Hook should include error details in the stop reason."""
         monkeypatch.chdir(invalid_results_dir)
@@ -194,7 +220,7 @@ class TestValidateOnStopHook:
 
     @pytest.mark.asyncio
     async def test_hook_limits_errors_to_three(
-        self, mock_input_data, tmp_path, monkeypatch
+        self, validate_on_stop, mock_input_data, tmp_path, monkeypatch
     ):
         """Hook should only include first 3 errors in summary."""
         # Create results dir with many errors
@@ -215,12 +241,17 @@ class TestValidateOnStopCallsEval:
     """Tests to verify validate_on_stop actually calls eval.validate_results."""
 
     @pytest.fixture
+    def validate_on_stop(self):
+        """Create a validate_on_stop hook for testing."""
+        return _create_validate_on_stop_hook(TEST_SESSION_ID)
+
+    @pytest.fixture
     def mock_input_data(self):
         """Mock input data for the Stop hook."""
         return {"hook_event_name": "Stop"}
 
     @pytest.mark.asyncio
-    async def test_validate_results_is_called(self, mock_input_data):
+    async def test_validate_results_is_called(self, validate_on_stop, mock_input_data):
         """Verify that validate_results from eval.py is actually called."""
         with patch("tinker_agent.agent.validate_results") as mock_validate:
             mock_validate.return_value = ValidationResult(
@@ -229,12 +260,12 @@ class TestValidateOnStopCallsEval:
 
             await validate_on_stop(mock_input_data, "tool_123", {})
 
-            # Assert validate_results was called exactly once with "results"
-            mock_validate.assert_called_once_with("results")
+            # Assert validate_results was called exactly once
+            mock_validate.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_validate_results_called_with_correct_path(self, mock_input_data):
-        """Verify validate_results is called with the 'results' directory path."""
+    async def test_validate_results_called_with_path(self, validate_on_stop, mock_input_data):
+        """Verify validate_results is called with a Path object."""
         with patch("tinker_agent.agent.validate_results") as mock_validate:
             mock_validate.return_value = ValidationResult(
                 valid=True, errors=[], base_score=0.5, trained_score=0.8
@@ -242,14 +273,20 @@ class TestValidateOnStopCallsEval:
 
             await validate_on_stop(mock_input_data, "tool_123", {})
 
-            # Get the actual call arguments
+            # Get the actual call arguments - should be a Path
             call_args = mock_validate.call_args
-            assert call_args[0][0] == "results"
+            from pathlib import Path
+            assert isinstance(call_args[0][0], Path)
 
     @pytest.mark.asyncio
     async def test_hook_uses_validation_result_valid_flag(self, mock_input_data):
         """Verify hook respects the valid flag from ValidationResult."""
         # Test with valid=True
+        validate_on_stop = _create_validate_on_stop_hook(TEST_SESSION_ID + "-valid")
+        agent_module._session_state[TEST_SESSION_ID + "-valid"] = {
+            "tool_output_chars": 0,
+            "validation_retries": 0,
+        }
         with patch("tinker_agent.agent.validate_results") as mock_validate:
             mock_validate.return_value = ValidationResult(
                 valid=True, errors=[], base_score=0.4, trained_score=0.7
@@ -257,7 +294,12 @@ class TestValidateOnStopCallsEval:
             result = await validate_on_stop(mock_input_data, "tool_123", {})
             assert result == {}  # Should allow stop
 
-        # Test with valid=False
+        # Test with valid=False (new session to reset retry count)
+        validate_on_stop2 = _create_validate_on_stop_hook(TEST_SESSION_ID + "-invalid")
+        agent_module._session_state[TEST_SESSION_ID + "-invalid"] = {
+            "tool_output_chars": 0,
+            "validation_retries": 0,
+        }
         with patch("tinker_agent.agent.validate_results") as mock_validate:
             mock_validate.return_value = ValidationResult(
                 valid=False,
@@ -265,12 +307,12 @@ class TestValidateOnStopCallsEval:
                 base_score=0.4,
                 trained_score=0.3,
             )
-            result = await validate_on_stop(mock_input_data, "tool_123", {})
+            result = await validate_on_stop2(mock_input_data, "tool_123", {})
             assert "hookSpecificOutput" in result  # Should continue
             assert result["hookSpecificOutput"]["decision"] == "continue"
 
     @pytest.mark.asyncio
-    async def test_hook_passes_errors_from_validation(self, mock_input_data):
+    async def test_hook_passes_errors_from_validation(self, validate_on_stop, mock_input_data):
         """Verify hook includes error messages from ValidationResult in stop reason."""
         specific_error = (
             "Trained model (45.00%) does not outperform base model (50.00%)"
@@ -288,7 +330,7 @@ class TestValidateOnStopCallsEval:
             assert specific_error in result["hookSpecificOutput"]["updatedStopReason"]
 
     @pytest.mark.asyncio
-    async def test_hook_handles_multiple_validation_errors(self, mock_input_data):
+    async def test_hook_handles_multiple_validation_errors(self, validate_on_stop, mock_input_data):
         """Verify hook handles multiple errors from ValidationResult."""
         errors = [
             "Missing required path: base_model.jsonl",
@@ -316,12 +358,17 @@ class TestValidateOnStopRetryLogic:
     """Tests for the retry logic in validate_on_stop."""
 
     @pytest.fixture
+    def validate_on_stop(self):
+        """Create a validate_on_stop hook for testing."""
+        return _create_validate_on_stop_hook(TEST_SESSION_ID)
+
+    @pytest.fixture
     def mock_input_data(self):
         """Mock input data for the Stop hook."""
         return {"hook_event_name": "Stop"}
 
     @pytest.mark.asyncio
-    async def test_first_failure_returns_continue(self, mock_input_data):
+    async def test_first_failure_returns_continue(self, validate_on_stop, mock_input_data):
         """First validation failure should return continue decision."""
         with patch("tinker_agent.agent.validate_results") as mock_validate:
             mock_validate.return_value = ValidationResult(
@@ -335,10 +382,10 @@ class TestValidateOnStopRetryLogic:
 
             assert "hookSpecificOutput" in result
             assert result["hookSpecificOutput"]["decision"] == "continue"
-            assert agent_module._validation_retry_count == 1
+            assert get_session_retry_count() == 1
 
     @pytest.mark.asyncio
-    async def test_second_failure_allows_stop(self, mock_input_data):
+    async def test_second_failure_allows_stop(self, validate_on_stop, mock_input_data):
         """After MAX_VALIDATION_RETRIES (2), hook should allow stop."""
         with patch("tinker_agent.agent.validate_results") as mock_validate:
             mock_validate.return_value = ValidationResult(
@@ -352,15 +399,15 @@ class TestValidateOnStopRetryLogic:
             result1 = await validate_on_stop(mock_input_data, "tool_123", {})
             assert "hookSpecificOutput" in result1
             assert result1["hookSpecificOutput"]["decision"] == "continue"
-            assert agent_module._validation_retry_count == 1
+            assert get_session_retry_count() == 1
 
             # Second failure - should allow stop (max retries reached)
             result2 = await validate_on_stop(mock_input_data, "tool_123", {})
             assert result2 == {}  # Empty dict = allow stop
-            assert agent_module._validation_retry_count == MAX_VALIDATION_RETRIES
+            assert get_session_retry_count() == MAX_VALIDATION_RETRIES
 
     @pytest.mark.asyncio
-    async def test_success_resets_nothing_just_allows_stop(self, mock_input_data):
+    async def test_success_resets_nothing_just_allows_stop(self, validate_on_stop, mock_input_data):
         """Successful validation should just allow stop without affecting retry count."""
         with patch("tinker_agent.agent.validate_results") as mock_validate:
             mock_validate.return_value = ValidationResult(
@@ -371,10 +418,10 @@ class TestValidateOnStopRetryLogic:
 
             assert result == {}
             # Retry count should still be 0 (success doesn't increment)
-            assert agent_module._validation_retry_count == 0
+            assert get_session_retry_count() == 0
 
     @pytest.mark.asyncio
-    async def test_failure_then_success_allows_stop(self, mock_input_data):
+    async def test_failure_then_success_allows_stop(self, validate_on_stop, mock_input_data):
         """If validation fails once then succeeds, should allow stop."""
         with patch("tinker_agent.agent.validate_results") as mock_validate:
             # First call fails
@@ -386,7 +433,7 @@ class TestValidateOnStopRetryLogic:
             )
             result1 = await validate_on_stop(mock_input_data, "tool_123", {})
             assert "hookSpecificOutput" in result1
-            assert agent_module._validation_retry_count == 1
+            assert get_session_retry_count() == 1
 
             # Second call succeeds
             mock_validate.return_value = ValidationResult(
@@ -395,7 +442,7 @@ class TestValidateOnStopRetryLogic:
             result2 = await validate_on_stop(mock_input_data, "tool_123", {})
             assert result2 == {}  # Allow stop
             # Retry count stays at 1 (success doesn't reset or increment)
-            assert agent_module._validation_retry_count == 1
+            assert get_session_retry_count() == 1
 
     @pytest.mark.asyncio
     async def test_max_validation_retries_constant(self):
@@ -406,8 +453,13 @@ class TestValidateOnStopRetryLogic:
 class TestLogToolOutputHook:
     """Tests for the log_tool_output PostToolUse hook."""
 
+    @pytest.fixture
+    def log_tool_output(self):
+        """Create a log_tool_output hook for testing."""
+        return _create_log_tool_output_hook(TEST_SESSION_ID)
+
     @pytest.mark.asyncio
-    async def test_log_tool_output_returns_empty_dict(self):
+    async def test_log_tool_output_returns_empty_dict(self, log_tool_output):
         """PostToolUse hook should always return empty dict (pass-through)."""
         input_data = {
             "tool_name": "Read",
@@ -419,19 +471,19 @@ class TestLogToolOutputHook:
         assert result == {}
 
     @pytest.mark.asyncio
-    async def test_log_tool_output_tracks_cumulative_chars(self):
+    async def test_log_tool_output_tracks_cumulative_chars(self, log_tool_output):
         """Hook should track cumulative character count."""
         input_data_1 = {"tool_name": "Read", "tool_result": "a" * 100}
         input_data_2 = {"tool_name": "Write", "tool_result": "b" * 200}
 
         await log_tool_output(input_data_1, "tool_1", {})
-        assert agent_module._total_tool_output_chars == 100
+        assert get_session_tool_output_chars() == 100
 
         await log_tool_output(input_data_2, "tool_2", {})
-        assert agent_module._total_tool_output_chars == 300
+        assert get_session_tool_output_chars() == 300
 
     @pytest.mark.asyncio
-    async def test_log_tool_output_handles_missing_fields(self):
+    async def test_log_tool_output_handles_missing_fields(self, log_tool_output):
         """Hook should handle missing tool_name or tool_result gracefully."""
         input_data = {}  # Missing both fields
 
@@ -440,7 +492,7 @@ class TestLogToolOutputHook:
         assert result == {}
 
     @pytest.mark.asyncio
-    async def test_log_tool_output_handles_large_output(self, capsys):
+    async def test_log_tool_output_handles_large_output(self, log_tool_output, capsys):
         """Hook should handle large outputs and print warning."""
         large_result = "x" * 60000  # > 50000 chars
         input_data = {"tool_name": "Read", "tool_result": large_result}
@@ -448,7 +500,7 @@ class TestLogToolOutputHook:
         await log_tool_output(input_data, "tool_123", {})
 
         # Check that it printed (we can't easily check rich output, but ensure no crash)
-        assert agent_module._total_tool_output_chars == 60000
+        assert get_session_tool_output_chars() == 60000
 
 
 class TestHookSignatures:
@@ -458,18 +510,21 @@ class TestHookSignatures:
         """validate_on_stop must be an async function for the SDK."""
         import asyncio
 
+        validate_on_stop = _create_validate_on_stop_hook("test-sig")
         assert asyncio.iscoroutinefunction(validate_on_stop)
 
     def test_log_tool_output_is_async(self):
         """log_tool_output must be an async function for the SDK."""
         import asyncio
 
+        log_tool_output = _create_log_tool_output_hook("test-sig")
         assert asyncio.iscoroutinefunction(log_tool_output)
 
     def test_validate_on_stop_accepts_three_args(self):
         """Hook must accept (input_data, tool_use_id, context)."""
         import inspect
 
+        validate_on_stop = _create_validate_on_stop_hook("test-sig")
         sig = inspect.signature(validate_on_stop)
         params = list(sig.parameters.keys())
         assert len(params) == 3
@@ -479,6 +534,7 @@ class TestHookSignatures:
         """Hook must accept (input_data, tool_use_id, context)."""
         import inspect
 
+        log_tool_output = _create_log_tool_output_hook("test-sig")
         sig = inspect.signature(log_tool_output)
         params = list(sig.parameters.keys())
         assert len(params) == 3
