@@ -1,9 +1,14 @@
 import asyncio
+import http.server
+import json
 import os
 import shutil
 import subprocess
 import sys
+import threading
+import webbrowser
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 
 from rich.console import Console
@@ -16,6 +21,50 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from tinker_agent.agent import run_agent, Config
 
 console = Console()
+
+# Trace file location
+TRACES_FILE = "traces.jsonl"
+
+
+def update_runs_index(project_root: Path) -> None:
+    """Update runs/index.json with all runs that have traces."""
+    runs_dir = project_root / "runs"
+    index_path = runs_dir / "index.json"
+    
+    if not runs_dir.exists():
+        return
+    
+    index = {}
+    for run_dir in runs_dir.iterdir():
+        if run_dir.is_dir() and (run_dir / "traces.jsonl").exists():
+            # Count traces
+            trace_count = 0
+            try:
+                with open(run_dir / "traces.jsonl") as f:
+                    trace_count = sum(1 for line in f if line.strip())
+            except:
+                pass
+            
+            index[run_dir.name] = {
+                "path": f"runs/{run_dir.name}",
+                "traceCount": trace_count,
+            }
+    
+    with open(index_path, "w") as f:
+        json.dump(index, f, indent=2)
+
+
+def start_trace_server(project_root: Path, port: int = 8765) -> int:
+    """Start a simple HTTP server at project root to serve the viewer."""
+    handler = partial(http.server.SimpleHTTPRequestHandler, directory=str(project_root))
+
+    def serve():
+        with http.server.HTTPServer(("", port), handler) as httpd:
+            httpd.serve_forever()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    return port
 
 PYPROJECT_DEPENDENCIES = """dependencies = [
     "tinker",
@@ -83,6 +132,14 @@ def main() -> None:
     # Change to the runs directory
     os.chdir(runs_dir)
 
+    # Trace file path
+    trace_path = runs_dir / TRACES_FILE
+
+    # Update runs index and start server from project root
+    update_runs_index(project_root)
+    port = start_trace_server(project_root)
+    viewer_url = f"http://localhost:{port}/viewer.html"
+
     # Header
     console.print()
     console.print(
@@ -92,6 +149,7 @@ def main() -> None:
             border_style="cyan",
         )
     )
+    console.print(f"[dim]Trace viewer: [link={viewer_url}]{viewer_url}[/link][/dim]")
 
     # Interactive CLI loop
     while True:
@@ -102,9 +160,15 @@ def main() -> None:
                 continue
             if prompt.strip().lower() in ("exit", "quit", "q"):
                 break
+            if prompt.strip().lower() == "view":
+                webbrowser.open(viewer_url)
+                continue
 
-            config = Config(prompt=prompt, cwd=str(runs_dir))
+            config = Config(prompt=prompt, cwd=str(runs_dir), trace_path=str(trace_path))
             asyncio.run(run_agent(config))
+            
+            # Update index after each run
+            update_runs_index(project_root)
 
         except KeyboardInterrupt:
             console.print("\n[dim]Exiting...[/dim]")

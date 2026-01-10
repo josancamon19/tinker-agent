@@ -11,13 +11,46 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from tinker_agent.eval import validate_results
+from tinker_agent.tracer import Tracer
 
 console = Console()
+
+# Global tracer instance (set per run)
+_tracer: Tracer | None = None
 
 # Per-session state tracking (supports concurrent sessions)
 # Key: session_id, Value: {"tool_output_chars": int, "validation_retries": int}
 _session_state: dict[str, dict] = {}
 MAX_VALIDATION_RETRIES = 2
+
+
+def _find_latest_results_dir(cwd: Path | None = None) -> Path | None:
+    """
+    Find the most recent results directory in runs/.
+    
+    Looks for directories matching runs/YYYYMMDD_HHMMSS/results/ pattern,
+    sorted by directory name (which is timestamp-based).
+    
+    Returns the path to the results/ directory, or None if not found.
+    """
+    base = cwd or Path.cwd()
+    runs_dir = base / "runs"
+    
+    if not runs_dir.exists():
+        return None
+    
+    # Find all run directories with results/ subfolder
+    run_dirs_with_results = []
+    for run_dir in runs_dir.iterdir():
+        if run_dir.is_dir() and (run_dir / "results").exists():
+            run_dirs_with_results.append(run_dir)
+    
+    if not run_dirs_with_results:
+        return None
+    
+    # Sort by name (YYYYMMDD_HHMMSS format sorts chronologically)
+    latest = sorted(run_dirs_with_results, key=lambda d: d.name, reverse=True)[0]
+    return latest / "results"
 
 
 @chz.chz
@@ -28,9 +61,10 @@ class Config:
     use_custom_prompt: bool = True
     cwd: str | None = None
     verbose: bool = False
+    trace_path: str | None = None  # Path to JSONL trace file (None = no tracing)
 
 
-def _create_log_tool_output_hook(session_id: str):
+def _create_log_tool_output_hook(session_id: str, tracer: Tracer | None = None):
     """Factory: creates a PostToolUse hook bound to a specific session."""
 
     async def log_tool_output(input_data, tool_use_id, context):
@@ -39,6 +73,11 @@ def _create_log_tool_output_hook(session_id: str):
 
         tool_name = input_data.get("tool_name", "unknown")
         tool_result = input_data.get("tool_result", "")
+
+        # Log to tracer (captures the actual tool output!)
+        if tracer:
+            is_error = input_data.get("is_error", False)
+            tracer.log_tool_result(tool_id=tool_use_id, result=tool_result, is_error=is_error)
 
         # Calculate size of this tool's output
         result_str = str(tool_result)
@@ -77,14 +116,21 @@ def _create_log_tool_output_hook(session_id: str):
     return log_tool_output
 
 
-def _create_validate_on_stop_hook(session_id: str):
+def _create_validate_on_stop_hook(session_id: str, cwd: Path | None = None):
     """Factory: creates a Stop hook bound to a specific session."""
 
     async def validate_on_stop(input_data, tool_use_id, context):
         """Stop hook: validate results and continue if validation fails (max 2 retries)."""
         state = _session_state.get(session_id, {})
 
-        result = validate_results("results")
+        # Find the most recent results directory in runs/
+        results_dir = _find_latest_results_dir(cwd)
+        if results_dir is None:
+            # Fall back to ./results if no runs/ directory found
+            results_dir = Path("results")
+        
+        console.print(f"[dim]🔍 Validating results at: {results_dir}[/dim]")
+        result = validate_results(results_dir)
 
         if not result.valid:
             state["validation_retries"] = state.get("validation_retries", 0) + 1
@@ -125,9 +171,22 @@ def _create_validate_on_stop_hook(session_id: str):
 # TODO: reuse tinker cookbook agents.md
 async def run_agent(config: Config) -> None:
     """Run the post-training agent."""
+    global _tracer
+    
     # Create unique session ID for this run (supports concurrent sessions)
     session_id = str(uuid.uuid4())
     _session_state[session_id] = {"tool_output_chars": 0, "validation_retries": 0}
+
+    # Initialize tracer if path provided
+    tracer = None
+    if config.trace_path:
+        tracer = Tracer(config.trace_path)
+        tracer.start_trace(
+            prompt=config.prompt,
+            model="claude-opus-4-5-20251101",
+            metadata={"cwd": config.cwd or str(Path.cwd())},
+        )
+        _tracer = tracer
 
     system_prompt_config = None
     if config.use_custom_prompt:
@@ -159,16 +218,31 @@ async def run_agent(config: Config) -> None:
         cwd=config.cwd or str(Path.cwd()),
         hooks={
             "PostToolUse": [
-                HookMatcher(hooks=[_create_log_tool_output_hook(session_id)])
+                HookMatcher(hooks=[_create_log_tool_output_hook(session_id, tracer=tracer)])
             ],
-            "Stop": [HookMatcher(hooks=[_create_validate_on_stop_hook(session_id)])],
+            "Stop": [HookMatcher(hooks=[_create_validate_on_stop_hook(session_id, cwd=Path(config.cwd) if config.cwd else None)])],
         },
     )
 
+    result_text = None
+    error_text = None
     try:
         async for message in query(prompt=config.prompt, options=options):
             _print_message(message, verbose=config.verbose)
+            # Record to tracer
+            if tracer:
+                tracer.record_message(message)
+                # Capture final result
+                if hasattr(message, "result") and message.result:
+                    result_text = message.result
+    except Exception as e:
+        error_text = str(e)
+        raise
     finally:
+        # End trace
+        if tracer:
+            tracer.end_trace(result=result_text, error=error_text)
+            _tracer = None
         # Clean up session state
         _session_state.pop(session_id, None)
 
