@@ -172,6 +172,70 @@ def _create_stop_hook(session_id: str, cwd: Path | None = None):
     return on_stop
 
 
+# Directory for streaming bash logs
+BASH_LOGS_DIR = Path("/tmp/tinker_bash_logs")
+
+# Minimum timeout (ms) to enable streaming - 30 seconds
+MIN_TIMEOUT_FOR_STREAMING = 30000
+
+
+def _create_can_use_tool_handler(tracer: Tracer | None = None):
+    """Factory: creates a can_use_tool handler that modifies Bash commands for streaming."""
+    from claude_agent_sdk.types import PermissionResultAllow, ToolPermissionContext
+
+    async def can_use_tool(
+        tool_name: str,
+        input_data: dict,
+        context: ToolPermissionContext
+    ) -> PermissionResultAllow:
+        """Permission handler that wraps long-running Bash commands for streaming output."""
+
+        # Only intercept Bash commands with significant timeout
+        if tool_name.lower() not in {"bash", "shell", "execute", "run"}:
+            return PermissionResultAllow(updated_input=input_data)
+
+        timeout = input_data.get("timeout", 0)
+        if timeout < MIN_TIMEOUT_FOR_STREAMING:
+            return PermissionResultAllow(updated_input=input_data)
+
+        command = input_data.get("command", "")
+        if not command:
+            return PermissionResultAllow(updated_input=input_data)
+
+        # Create log directory
+        BASH_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Create unique log file for this tool call (use timestamp + hash since we don't have tool_use_id here)
+        import hashlib
+        import time
+        tool_hash = hashlib.md5(f"{command}{time.time()}".encode()).hexdigest()[:12]
+        log_file = BASH_LOGS_DIR / f"{tool_hash}.log"
+
+        # Clear any existing log file
+        log_file.write_text("")
+
+        # Wrap command to tee output to log file
+        # Use stdbuf to disable buffering so output appears immediately
+        modified_command = f"({command}) 2>&1 | stdbuf -oL tee {log_file}"
+
+        console.print(f"[dim]📡 Streaming output to: {log_file}[/dim]")
+
+        # Log to tracer so viewer knows where to find the log
+        if tracer:
+            tracer.add_event("bash_stream_start", {
+                "tool_id": tool_hash,
+                "log_file": str(log_file),
+                "original_command": command,
+            })
+
+        # Return with modified input
+        return PermissionResultAllow(
+            updated_input={**input_data, "command": modified_command}
+        )
+
+    return can_use_tool
+
+
 # TODO: reuse tinker cookbook agents.md
 async def run_agent(config: Config) -> None:
     """Run the post-training agent."""
@@ -216,10 +280,11 @@ async def run_agent(config: Config) -> None:
         tools={"type": "preset", "preset": "claude_code"},
         system_prompt=system_prompt_config,
         model="claude-opus-4-5-20251101",
-        permission_mode="bypassPermissions",
+        permission_mode="acceptEdits",  # Use acceptEdits so can_use_tool still runs
         mcp_servers={},
         continue_conversation=False,
         cwd=config.cwd or str(Path.cwd()),
+        can_use_tool=_create_can_use_tool_handler(tracer=tracer),
         hooks={
             "PostToolUse": [
                 HookMatcher(

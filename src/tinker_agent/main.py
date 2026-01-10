@@ -87,13 +87,18 @@ def setup_project(runs_dir: Path) -> None:
     """Initialize uv project and install dependencies."""
     console.print("[dim]Setting up project...[/dim]")
 
-    # Force uv to use a local .venv in the runs directory
+    # Force uv to use a local .venv and ignore parent workspace
     env = os.environ.copy()
     env["UV_PROJECT_ENVIRONMENT"] = str(runs_dir / ".venv")
+    env["UV_NO_WORKSPACE"] = "1"  # Prevent discovering parent workspace
 
-    # Run uv init
+    # Run uv init (--no-workspace prevents modifying parent pyproject.toml)
     subprocess.run(
-        ["uv", "init"], cwd=runs_dir, env=env, check=True, capture_output=True
+        ["uv", "init", "--no-workspace"],
+        cwd=runs_dir,
+        env=env,
+        check=True,
+        capture_output=True,
     )
 
     # Update pyproject.toml with dependencies

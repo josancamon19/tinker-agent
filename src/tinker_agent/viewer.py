@@ -325,7 +325,7 @@ def fmt_timeout(ms: int) -> str:
     return f"{ms // 1000}s"
 
 
-def render_bash_tool_call(tool_input: dict, time_str: str, is_pending: bool = False):
+def render_bash_tool_call(tool_input: dict, time_str: str, is_pending: bool = False, log_file: str | None = None):
     """Render a Bash tool call with clean, compact UI."""
     command = tool_input.get("command", "")
     description = tool_input.get("description", "")
@@ -338,6 +338,8 @@ def render_bash_tool_call(tool_input: dict, time_str: str, is_pending: bool = Fa
         badges.append(f"⏱ {fmt_timeout(timeout)}")
     if run_in_bg:
         badges.append("⚡ bg")
+    if log_file and is_pending:
+        badges.append("📡 streaming")
 
     badge_html = " ".join(f"<span class='tool-badge'>{b}</span>" for b in badges)
 
@@ -354,8 +356,40 @@ def render_bash_tool_call(tool_input: dict, time_str: str, is_pending: bool = Fa
         unsafe_allow_html=True,
     )
 
-    # Command in a code block
-    st.code(command, language="bash")
+    # Command in a code block (strip tee wrapper if present for cleaner display)
+    display_command = command
+    if "| stdbuf -oL tee /tmp/tinker_bash_logs/" in command:
+        # Extract original command from wrapper
+        display_command = command.split(") 2>&1 | stdbuf")[0]
+        if display_command.startswith("("):
+            display_command = display_command[1:]
+    st.code(display_command, language="bash")
+
+    # Show live streaming output if pending and log file exists
+    if is_pending and log_file:
+        log_path = Path(log_file)
+        if log_path.exists():
+            try:
+                log_content = log_path.read_text()
+                if log_content:
+                    # Show last N lines of output
+                    lines = log_content.splitlines()
+                    max_lines = 50
+                    if len(lines) > max_lines:
+                        display_lines = lines[-max_lines:]
+                        truncated_msg = f"... [{len(lines) - max_lines} earlier lines]\n"
+                    else:
+                        display_lines = lines
+                        truncated_msg = ""
+
+                    st.markdown(
+                        f"<div class='cli-output' style='border-left-color: #d29922;'><pre>{truncated_msg}{_escape_html(chr(10).join(display_lines))}</pre></div>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown("<div class='cli-output empty' style='border-left-color: #d29922;'>⏳ Waiting for output...</div>", unsafe_allow_html=True)
+            except Exception:
+                pass
 
 
 def render_todo_tool_call(tool_input: dict, time_str: str):
@@ -371,11 +405,7 @@ def render_todo_tool_call(tool_input: dict, time_str: str):
     summary = f"{completed}✓ {in_progress}→ {pending}○"
 
     st.markdown(
-        f"""<div class='tool-header'>
-            <span class='tool-name-badge todo'>Todo</span>
-            <span class='tool-desc'>{len(todos)} items</span>
-            <span class='tool-meta'><span class='tool-badge'>{summary}</span> <span class='tool-time'>{time_str}</span></span>
-        </div>""",
+        f"<div class='tool-header'><span class='tool-name-badge todo'>Todo</span> <span class='tool-desc'>{len(todos)} items</span><span class='tool-meta'><span class='tool-badge'>{summary}</span> <span class='tool-time'>{time_str}</span></span></div>",
         unsafe_allow_html=True,
     )
 
@@ -503,12 +533,13 @@ def _escape_html(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def render_event(event: dict, completed_tool_ids: set | None = None, trace_ended: bool = True):
+def render_event(event: dict, completed_tool_ids: set | None = None, trace_ended: bool = True, stream_log_files: dict | None = None):
     """Render a single event compactly."""
     etype = event.get("type", "unknown")
     ts = event.get("timestamp", 0)
     data = event.get("data", {})
     completed_tool_ids = completed_tool_ids or set()
+    stream_log_files = stream_log_files or {}
 
     icons = {
         "message": "💬",
@@ -540,9 +571,21 @@ def render_event(event: dict, completed_tool_ids: set | None = None, trace_ended
         # Check if this tool call is still pending (no result yet)
         is_pending = tool_id not in completed_tool_ids and not trace_ended
 
+        # Get streaming log file if available (match by original command)
+        log_file = None
+        if tool_name.lower() in {"bash", "shell", "execute", "run"}:
+            command = tool_input.get("command", "")
+            # Extract original command if wrapped with tee
+            original_cmd = command
+            if "| stdbuf -oL tee /tmp/tinker_bash_logs/" in command:
+                original_cmd = command.split(") 2>&1 | stdbuf")[0]
+                if original_cmd.startswith("("):
+                    original_cmd = original_cmd[1:]
+            log_file = stream_log_files.get(original_cmd)
+
         # Special rendering for specific tools
         if tool_name.lower() in {"bash", "shell", "execute", "run"}:
-            render_bash_tool_call(tool_input, time_str, is_pending=is_pending)
+            render_bash_tool_call(tool_input, time_str, is_pending=is_pending, log_file=log_file)
         elif tool_name.lower() in {"todowrite", "todo_write", "todo"}:
             render_todo_tool_call(tool_input, time_str)
         # Single param and short value -> inline
@@ -634,9 +677,20 @@ def render_trace(trace: dict):
             if tool_id:
                 completed_tool_ids.add(tool_id)
 
+    # Build mapping of original_command -> log_file from bash_stream_start events
+    # We match by command since tool_id from can_use_tool doesn't match SDK's tool_use_id
+    stream_log_files = {}
+    for event in events:
+        if event.get("type") == "bash_stream_start":
+            data = event.get("data", {})
+            original_command = data.get("original_command")
+            log_file = data.get("log_file")
+            if original_command and log_file:
+                stream_log_files[original_command] = log_file
+
     # Events
     for event in events:
-        render_event(event, completed_tool_ids=completed_tool_ids, trace_ended=ended is not None)
+        render_event(event, completed_tool_ids=completed_tool_ids, trace_ended=ended is not None, stream_log_files=stream_log_files)
 
     # Final error only (result is already shown as an event)
     if trace.get("error"):
