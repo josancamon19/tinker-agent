@@ -27,27 +27,27 @@ MAX_VALIDATION_RETRIES = 2
 def _find_latest_results_dir(cwd: Path | None = None) -> Path | None:
     """
     Find the most recent results directory in runs/.
-    
+
     Looks for directories matching runs/YYYYMMDD_HHMMSS/results/ pattern,
     sorted by directory name (which is timestamp-based).
-    
+
     Returns the path to the results/ directory, or None if not found.
     """
     base = cwd or Path.cwd()
     runs_dir = base / "runs"
-    
+
     if not runs_dir.exists():
         return None
-    
+
     # Find all run directories with results/ subfolder
     run_dirs_with_results = []
     for run_dir in runs_dir.iterdir():
         if run_dir.is_dir() and (run_dir / "results").exists():
             run_dirs_with_results.append(run_dir)
-    
+
     if not run_dirs_with_results:
         return None
-    
+
     # Sort by name (YYYYMMDD_HHMMSS format sorts chronologically)
     latest = sorted(run_dirs_with_results, key=lambda d: d.name, reverse=True)[0]
     return latest / "results"
@@ -77,7 +77,9 @@ def _create_log_tool_output_hook(session_id: str, tracer: Tracer | None = None):
         # Log to tracer (captures the actual tool output!)
         if tracer:
             is_error = input_data.get("is_error", False)
-            tracer.log_tool_result(tool_id=tool_use_id, result=tool_result, is_error=is_error)
+            tracer.log_tool_result(
+                tool_id=tool_use_id, result=tool_result, is_error=is_error
+            )
 
         # Calculate size of this tool's output
         result_str = str(tool_result)
@@ -128,7 +130,7 @@ def _create_validate_on_stop_hook(session_id: str, cwd: Path | None = None):
         if results_dir is None:
             # Fall back to ./results if no runs/ directory found
             results_dir = Path("results")
-        
+
         console.print(f"[dim]🔍 Validating results at: {results_dir}[/dim]")
         result = validate_results(results_dir)
 
@@ -172,7 +174,7 @@ def _create_validate_on_stop_hook(session_id: str, cwd: Path | None = None):
 async def run_agent(config: Config) -> None:
     """Run the post-training agent."""
     global _tracer
-    
+
     # Create unique session ID for this run (supports concurrent sessions)
     session_id = str(uuid.uuid4())
     _session_state[session_id] = {"tool_output_chars": 0, "validation_retries": 0}
@@ -218,9 +220,19 @@ async def run_agent(config: Config) -> None:
         cwd=config.cwd or str(Path.cwd()),
         hooks={
             "PostToolUse": [
-                HookMatcher(hooks=[_create_log_tool_output_hook(session_id, tracer=tracer)])
+                HookMatcher(
+                    hooks=[_create_log_tool_output_hook(session_id, tracer=tracer)]
+                )
             ],
-            "Stop": [HookMatcher(hooks=[_create_validate_on_stop_hook(session_id, cwd=Path(config.cwd) if config.cwd else None)])],
+            "Stop": [
+                HookMatcher(
+                    hooks=[
+                        _create_validate_on_stop_hook(
+                            session_id, cwd=Path(config.cwd) if config.cwd else None
+                        )
+                    ]
+                )
+            ],
         },
     )
 
@@ -361,3 +373,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# streamlit run src/tinker_agent/viewer.py --server.headless=true --browser.gatherUsageStats=false

@@ -23,7 +23,7 @@ from tinker_agent.agent import run_agent, Config
 console = Console()
 
 # Trace file location
-TRACES_FILE = "traces.jsonl"
+TRACES_FILE = "traces.json"
 
 
 def update_runs_index(project_root: Path) -> None:
@@ -36,12 +36,14 @@ def update_runs_index(project_root: Path) -> None:
     
     index = {}
     for run_dir in runs_dir.iterdir():
-        if run_dir.is_dir() and (run_dir / "traces.jsonl").exists():
-            # Count traces
+        if run_dir.is_dir() and (run_dir / "traces.json").exists():
+            # Count traces from JSON array
             trace_count = 0
             try:
-                with open(run_dir / "traces.jsonl") as f:
-                    trace_count = sum(1 for line in f if line.strip())
+                with open(run_dir / "traces.json") as f:
+                    traces = json.load(f)
+                    if isinstance(traces, list):
+                        trace_count = len(traces)
             except:
                 pass
             
@@ -149,7 +151,7 @@ def main() -> None:
             border_style="cyan",
         )
     )
-    console.print(f"[dim]Trace viewer: [link={viewer_url}]{viewer_url}[/link][/dim]")
+    # console.print(f"[dim]Trace viewer: [link={viewer_url}]{viewer_url}[/link][/dim]")
 
     # Interactive CLI loop
     while True:

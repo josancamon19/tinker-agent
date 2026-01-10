@@ -9,10 +9,15 @@ dependencies = [
     "claude-agent-sdk>=0.1.18",
     "daytona>=0.128.1",
     "rich>=14.2.0",
+    "streamlit>=1.40.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23.0"]
+
+[project.scripts]
+tinker-agent = "tinker_agent.main:main"
+tinker-viewer = "tinker_agent.viewer_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tinker_agent"]
@@ -21,3 +26,8 @@ packages = ["src/tinker_agent"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
+
+[tool.uv.workspace]
+members = [
+    "runs/20260109_163529",
+]

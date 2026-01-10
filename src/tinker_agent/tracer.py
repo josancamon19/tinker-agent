@@ -1,4 +1,4 @@
-"""Simple JSONL tracer for agent executions."""
+"""Simple JSON tracer for agent executions."""
 
 import json
 import time
@@ -34,9 +34,9 @@ class Trace:
 
 
 class Tracer:
-    """Collects and writes traces to JSONL format."""
+    """Collects and writes traces to JSON format."""
 
-    def __init__(self, output_path: str | Path = "traces.jsonl"):
+    def __init__(self, output_path: str | Path = "traces.json"):
         self.output_path = Path(output_path)
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         self.current_trace: Trace | None = None
@@ -112,19 +112,27 @@ class Tracer:
         self.current_trace = None
 
     def _write_trace(self) -> None:
-        """Write/update the current trace to the JSONL file."""
+        """Write/update the current trace to the JSON file."""
         if not self.current_trace:
             return
 
         # Read existing traces
         traces: dict[str, dict] = {}
         if self.output_path.exists():
-            with open(self.output_path, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        trace = json.loads(line)
-                        traces[trace["id"]] = trace
+            try:
+                with open(self.output_path, "r") as f:
+                    content = f.read().strip()
+                    if content:
+                        existing = json.loads(content)
+                        # Handle both array format and legacy single-trace format
+                        if isinstance(existing, list):
+                            for trace in existing:
+                                traces[trace["id"]] = trace
+                        elif isinstance(existing, dict) and "id" in existing:
+                            traces[existing["id"]] = existing
+            except (json.JSONDecodeError, KeyError):
+                # If file is corrupted or invalid, start fresh
+                traces = {}
 
         # Update current trace
         trace_dict = asdict(self.current_trace)
@@ -132,10 +140,9 @@ class Tracer:
         trace_dict["events"] = [asdict(e) for e in self.current_trace.events]
         traces[self.current_trace.id] = trace_dict
 
-        # Write all traces back (keeps file consistent)
+        # Write all traces as a JSON array (formatted for readability)
         with open(self.output_path, "w") as f:
-            for trace in traces.values():
-                f.write(json.dumps(trace) + "\n")
+            json.dump(list(traces.values()), f, indent=2)
 
     def record_message(self, message: Any, verbose: bool = False) -> None:
         """Record a message from the claude_agent_sdk stream."""
