@@ -454,26 +454,29 @@ Before training, analyze the dataset to make the right configuration decisions. 
 | **Training**   | 20,000                            |
 | **Evaluation** | 10% of training size (max 2,000)  |
 
-**Always sample datasets down to these limits:**
+**CRITICAL: Always use `streaming=True`** to avoid downloading massive datasets (some are 100GB+):
 
 ```python
 from datasets import load_dataset
 
-# Load and sample
-ds = load_dataset("dataset/name", split="train")
-total_rows = len(ds)
+# ALWAYS use streaming=True to avoid downloading entire dataset
+ds = load_dataset("dataset/name", split="train", streaming=True)
 
-# Apply training limit
-train_size = min(total_rows, 20_000)
-ds = ds.shuffle(seed=42).select(range(train_size))
+# Take only what we need (max 20k for training)
+ds = ds.shuffle(seed=42, buffer_size=10_000)
+samples = list(ds.take(20_000))
+
+# Convert to regular dataset for processing
+from datasets import Dataset
+ds = Dataset.from_list(samples)
 
 # Split for eval (10% of training, max 2000)
+train_size = len(ds)
 eval_size = min(int(train_size * 0.1), 2_000)
 split = ds.train_test_split(test_size=eval_size, seed=42)
 train_data = split["train"]
 eval_data = split["test"]
 
-print(f"Original: {total_rows:,} rows")
 print(f"Training: {len(train_data):,} rows")
 print(f"Eval: {len(eval_data):,} rows")
 ```
@@ -482,6 +485,7 @@ print(f"Eval: {len(eval_data):,} rows")
 - SFT sees diminishing returns after 10-20k diverse examples
 - Keeps training fast and cost-effective
 - Eval doesn't need to be large to measure NLL accurately
+- Streaming avoids downloading gigabytes of data you won't use
 
 ### Train/Test Splits
 

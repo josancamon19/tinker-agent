@@ -1,16 +1,22 @@
 """Streamlit trace viewer for agent executions."""
 
 import ast
+import asyncio
 import json
+import os
+import shutil
+import subprocess
+import threading
 from datetime import datetime
 from pathlib import Path
+from queue import Queue
 
 import streamlit as st
 
 # Page config
 st.set_page_config(
-    page_title="Trace Viewer",
-    page_icon="🔍",
+    page_title="Tinker Agent",
+    page_icon="🔧",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -752,6 +758,68 @@ def render_trace(trace: dict):
         )
 
 
+def setup_run_directory(project_root: Path) -> Path:
+    """Create a new run directory with uv project setup."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    runs_dir = project_root / "runs" / timestamp
+    runs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy .env
+    env_file = project_root / ".env"
+    if env_file.exists():
+        shutil.copy(env_file, runs_dir / ".env")
+
+    # Setup uv project
+    env = os.environ.copy()
+    env["UV_PROJECT_ENVIRONMENT"] = str(runs_dir / ".venv")
+    env["UV_NO_WORKSPACE"] = "1"
+
+    subprocess.run(
+        ["uv", "init", "--no-workspace"],
+        cwd=runs_dir, env=env, check=True, capture_output=True
+    )
+
+    # Update pyproject.toml
+    pyproject = runs_dir / "pyproject.toml"
+    content = pyproject.read_text()
+    content = content.replace(
+        "dependencies = []",
+        'dependencies = [\n    "tinker",\n    "tinker-cookbook",\n    "wandb",\n    "python-dotenv",\n]'
+    )
+    content += '\n[tool.uv.sources]\ntinker-cookbook = { git = "https://github.com/thinking-machines-lab/tinker-cookbook.git" }\n'
+    pyproject.write_text(content)
+
+    subprocess.run(
+        ["uv", "sync"], cwd=runs_dir, env=env, check=True, capture_output=True
+    )
+
+    return runs_dir
+
+
+def run_agent_thread(prompt: str, runs_dir: Path, status_queue: Queue):
+    """Run the agent in a background thread."""
+    import sys
+    src_path = Path(__file__).parent.parent
+    if str(src_path) not in sys.path:
+        sys.path.insert(0, str(src_path))
+
+    from tinker_agent.agent import run_agent, Config
+
+    trace_path = runs_dir / "traces.json"
+    config = Config(
+        prompt=prompt,
+        cwd=str(runs_dir),
+        trace_path=str(trace_path),
+    )
+
+    try:
+        status_queue.put({"status": "running"})
+        asyncio.run(run_agent(config))
+        status_queue.put({"status": "done"})
+    except Exception as e:
+        status_queue.put({"status": "error", "error": str(e)})
+
+
 def main():
     # Find project root
     cwd = Path.cwd()
@@ -769,19 +837,41 @@ def main():
         st.session_state.selected_run = None
     if "trace_idx" not in st.session_state:
         st.session_state.trace_idx = 0
+    if "agent_running" not in st.session_state:
+        st.session_state.agent_running = False
+    if "status_queue" not in st.session_state:
+        st.session_state.status_queue = Queue()
 
-    # Sidebar
+    # Check for status updates from agent thread
+    if st.session_state.agent_running:
+        try:
+            while not st.session_state.status_queue.empty():
+                status = st.session_state.status_queue.get_nowait()
+                if status.get("status") in ("done", "error"):
+                    st.session_state.agent_running = False
+                    if status.get("status") == "error":
+                        st.error(f"Agent error: {status.get('error', 'Unknown')}")
+        except:
+            pass
+
+    # Sidebar with sessions list (always visible)
     with st.sidebar:
-        st.markdown("## 🔍 Traces")
-        st.caption("Auto-refresh: 500ms")
+        st.markdown("## 🔍 Sessions")
 
-        st.divider()
+        # New session button (only show if a session is selected)
+        if st.session_state.selected_run:
+            if st.button("➕ New Session", use_container_width=True, type="primary"):
+                st.session_state.selected_run = None
+                st.session_state.agent_running = False
+                st.session_state.trace_idx = 0
+                st.rerun()
+            st.divider()
 
         # Runs list
         runs = find_runs_with_traces(runs_dir)
 
         if not runs:
-            st.caption(f"No traces in {runs_dir}")
+            st.caption("No sessions yet")
         else:
             for run in runs:
                 name = run["name"]
@@ -794,51 +884,102 @@ def main():
                 ):
                     st.session_state.selected_run = name
                     st.session_state.trace_idx = 0
-                    st.session_state.prev_event_count = 0  # Reset scroll tracking
+                    st.session_state.prev_event_count = 0
                     st.rerun()
 
     # Main area
-    if st.session_state.selected_run:
-        trace_file = runs_dir / st.session_state.selected_run / "traces.json"
+    if not st.session_state.selected_run and not st.session_state.agent_running:
+        # Centered chat interface
+        st.markdown("""
+        <style>
+            .chat-container {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                min-height: 60vh;
+                text-align: center;
+            }
+            .chat-title {
+                font-size: 2.5rem;
+                margin-bottom: 0.5rem;
+            }
+            .chat-subtitle {
+                color: #8b949e;
+                margin-bottom: 2rem;
+            }
+        </style>
+        <div class="chat-container">
+            <div class="chat-title">🔧 Tinker Agent</div>
+            <div class="chat-subtitle">Fine-tune language models with Tinker</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        if trace_file.exists():
-            traces = load_traces(trace_file)
+        # Chat input
+        prompt = st.chat_input("What post-training task do you need help with?")
 
-            if traces:
-                # Trace selector for multiple traces
-                if len(traces) > 1:
-                    idx = st.selectbox(
-                        "Trace",
-                        range(len(traces)),
-                        index=min(st.session_state.trace_idx, len(traces) - 1),
-                        format_func=lambda i: f"{traces[i].get('id', '?')}: {traces[i].get('prompt', '')[:40]}...",
-                        label_visibility="collapsed",
-                    )
-                    if idx != st.session_state.trace_idx:
-                        st.session_state.prev_event_count = 0  # Reset scroll tracking
-                    st.session_state.trace_idx = idx
-                else:
-                    idx = 0
+        if prompt:
+            # Setup run directory
+            with st.spinner("Setting up environment..."):
+                new_run_dir = setup_run_directory(project_root)
+                st.session_state.selected_run = new_run_dir.name
 
-                render_trace(traces[idx])
-            else:
-                st.warning("Empty trace file")
-        else:
-            st.error("Trace file not found")
+            # Start agent in background
+            st.session_state.agent_running = True
+            thread = threading.Thread(
+                target=run_agent_thread,
+                args=(prompt, new_run_dir, st.session_state.status_queue),
+                daemon=True
+            )
+            thread.start()
+            st.rerun()
+
     else:
-        st.markdown("### 👈 Select a run")
-        st.caption("Auto-refreshes to show live execution")
+        # Agent is running or run is selected - show trace
+        if st.session_state.selected_run:
+            # Status indicator
+            if st.session_state.agent_running:
+                st.markdown('<span style="color: #d29922; animation: pulse 1s infinite;">● Running...</span>', unsafe_allow_html=True)
 
-    # Auto-refresh using streamlit-autorefresh (more reliable than JS/meta refresh)
+            trace_file = runs_dir / st.session_state.selected_run / "traces.json"
+
+            if trace_file.exists():
+                traces = load_traces(trace_file)
+
+                if traces:
+                    # Trace selector for multiple traces
+                    if len(traces) > 1:
+                        idx = st.selectbox(
+                            "Trace",
+                            range(len(traces)),
+                            index=min(st.session_state.trace_idx, len(traces) - 1),
+                            format_func=lambda i: f"{traces[i].get('id', '?')}: {traces[i].get('prompt', '')[:40]}...",
+                            label_visibility="collapsed",
+                        )
+                        if idx != st.session_state.trace_idx:
+                            st.session_state.prev_event_count = 0
+                        st.session_state.trace_idx = idx
+                    else:
+                        idx = 0
+
+                    render_trace(traces[idx])
+                else:
+                    if st.session_state.agent_running:
+                        st.info("⏳ Agent starting...")
+                    else:
+                        st.warning("Empty trace file")
+            else:
+                if st.session_state.agent_running:
+                    st.info("⏳ Agent starting...")
+                else:
+                    st.error("Trace file not found")
+
+    # Auto-refresh
     try:
         from streamlit_autorefresh import st_autorefresh
-
         st_autorefresh(interval=500, key="trace_refresh")
     except ImportError:
-        # Fallback: manual refresh hint
-        st.caption(
-            "Install `streamlit-autorefresh` for auto-refresh: `pip install streamlit-autorefresh`"
-        )
+        pass
 
 
 if __name__ == "__main__":
