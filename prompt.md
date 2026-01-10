@@ -18,27 +18,38 @@ Given a task, dataset, base model, and training settings, configure and execute 
 
 ### What Success Looks Like
 
-After training, the model should complete the target task better than the base model. "Complete" means successfully finishing what the task requires—solving a problem, generating correct code, following instructions accurately.
+After training, the model should perform the target task better than the base model. What "better" means depends on the training type:
 
-For example:
+**Reinforcement Learning (RL)** — Accuracy/success rate should increase:
 - **Math RL**: Base model solves 40% of problems → trained model solves 65%
 - **Code RL**: Base model passes 2/10 test cases → trained model passes 7/10
-- **Chat SFT**: Base model ignores formatting → trained model follows the required structure
+- **Game RL**: Base model wins 30% of games → trained model wins 70%
 
-If training finishes but the trained model performs the same as (or worse than) the base model, something is wrong—check the training signal, hyperparameters, or dataset quality. The goal is a clear performance delta where the trained model reliably completes tasks it previously failed.
+**Supervised Fine-Tuning (SFT)** — Eval loss (NLL) should decrease:
+- **Instruction SFT**: Base model NLL 2.8 → trained model NLL 1.9 (32% reduction)
+- **Chat SFT**: Base model NLL 3.1 → trained model NLL 2.2 (29% reduction)
+- **Distillation**: Base model NLL 2.5 → trained model NLL 1.6 (36% reduction)
+
+SFT uses **negative log-likelihood (NLL)** on held-out completion tokens—the same loss being optimized during training. Lower NLL means the model assigns higher probability to expected completions. This is computed via `NLLEvaluator` in tinker-cookbook's supervised training module.
+
+If training finishes but metrics don't improve, something is wrong—check the training signal, hyperparameters, or dataset quality. The goal is a clear performance delta.
 
 Do not consider your task complete until you have:
 
 1. **Executed post-training** — The training job must run successfully. Without executing the actual training, the task is incomplete regardless of code quality
 2. **Evaluated both models** — Run the same evaluation on the base model and the trained model
-3. **Reported comparative results** — Present baseline vs trained metrics side-by-side (e.g., "Base: 42% → Trained: 67%")
+3. **Reported comparative results** — Present baseline vs trained metrics side-by-side:
+   - RL: "Base accuracy: 42% → Trained: 67%"
+   - SFT: "Base NLL: 2.8 → Trained NLL: 1.9 (32% reduction)"
 4. **Created a `results/` folder** with all required artifacts:
    - `results/logs/` — Training logs (set `log_path="results/logs/{run_name}"` in your config)
    - `results/base_model.jsonl` — Base model evaluation results
    - `results/trained_model.jsonl` — Trained model evaluation results
    - `results/summary.json` — Final metrics, tinker run ID, and training metadata
 
-   Each row in the JSONL evaluation files must contain these fields for deterministic validation:
+   **JSONL schema depends on task type:**
+
+   For **RL tasks** (accuracy-based evaluation):
    ```json
    {
      "index": 0,
@@ -49,11 +60,24 @@ Do not consider your task complete until you have:
      "correct": true
    }
    ```
+
+   For **SFT tasks** (loss-based evaluation):
+   ```json
+   {
+     "index": 0,
+     "prompt": "The instruction/prompt",
+     "completion": "The expected completion (ground truth)",
+     "nll": 2.34
+   }
+   ```
+
 5. **Recorded run metadata** — The `results/summary.json` must include:
+   - `task_type` — Either `"rl"` or `"sft"`
    - `tinker_run_id` — The run ID returned by Tinker
    - `log_path` — Path where training logs were saved (e.g., `results/logs/math_rl_run_001`)
    - `wandb_url` — Link to the W&B dashboard for this run
-   - `baseline_score` and `trained_score` — Final evaluation metrics
+   - For RL: `baseline_score` and `trained_score` (accuracy/success rate)
+   - For SFT: `baseline_nll` and `trained_nll` (lower is better)
 6. **Verified W&B logging** — Confirm metrics appear in the W&B dashboard. Use the [wandb API](https://docs.wandb.ai/ref/python/) to programmatically check that runs logged correctly if needed
 7. **Ensured runnable codebase** — All scripts must execute without errors. Test that `uv run python train.py` works with the provided configuration
 
@@ -414,6 +438,162 @@ Analyze the user's task to determine the training signal:
 - Multiple teachers → `distillation/on_policy_multi_teacher`
 
 If the task doesn't fit any category, ask the user for clarification about their training signal.
+
+---
+
+## Data Preparation
+
+Before training, analyze the dataset to make the right configuration decisions. Most datasets come from HuggingFace or are provided as JSONL files.
+
+### Train/Test Splits
+
+Check if the dataset has a predefined split:
+
+```python
+from datasets import load_dataset
+
+ds = load_dataset("allenai/tulu-3-sft-mixture")
+print(ds)  # Check for 'train', 'test', 'validation' keys
+```
+
+If the dataset has **only a train split** (common for SFT datasets), create a test split for evaluation:
+
+```python
+# Split 90% train, 10% test
+split = ds["train"].train_test_split(test_size=0.1, seed=42)
+train_data = split["train"]
+test_data = split["test"]
+```
+
+For RL datasets, you typically need:
+- **Training prompts**: What the model will be trained on
+- **Evaluation prompts**: Held-out set to measure improvement (can be same distribution or different difficulty)
+
+### SFT: Choosing What Tokens to Train On (`train_on_what`)
+
+For SFT, you must decide which tokens contribute to the loss. This is controlled by `train_on_what`:
+
+```python
+from tinker_cookbook.supervised.common import TrainOnWhat
+
+class TrainOnWhat(StrEnum):
+    LAST_ASSISTANT_MESSAGE = "last_assistant_message"   # Only final response
+    ALL_ASSISTANT_MESSAGES = "all_assistant_messages"   # All assistant turns
+    ALL_MESSAGES = "all_messages"                       # User + assistant turns
+    ALL_TOKENS = "all_tokens"                           # Everything including system
+    ALL_USER_AND_SYSTEM_MESSAGES = "all_user_and_system_messages"  # Inverse of assistant
+    CUSTOMIZED = "customized"                           # Manual weight specification
+```
+
+**Guidelines:**
+
+| Dataset Type | Recommended `train_on_what` | Why |
+|--------------|----------------------------|-----|
+| Single-turn instruction (prompt→response) | `LAST_ASSISTANT_MESSAGE` | Only train on the response |
+| Multi-turn chat | `ALL_ASSISTANT_MESSAGES` | Learn all assistant behaviors |
+| Distillation from reasoning traces | `LAST_ASSISTANT_MESSAGE` | Learn the reasoning chain |
+| System prompt baking | `ALL_TOKENS` | Learn to internalize the system prompt |
+
+Default is `LAST_ASSISTANT_MESSAGE` which works for most instruction-following datasets.
+
+### SFT: Dataset Structure
+
+SFT datasets typically come in one of these formats:
+
+**Chat/Messages format** (preferred):
+```json
+{"messages": [
+  {"role": "system", "content": "You are helpful."},
+  {"role": "user", "content": "What is 2+2?"},
+  {"role": "assistant", "content": "4"}
+]}
+```
+
+**Prompt/Completion format**:
+```json
+{"prompt": "What is 2+2?", "completion": "4"}
+```
+
+**Instruction/Input/Output format**:
+```json
+{"instruction": "Add these numbers", "input": "2+2", "output": "4"}
+```
+
+Use the appropriate dataset builder:
+- `ChatDatasetBuilder` — For messages format
+- `FromConversationFileBuilder` — For custom JSONL files
+- Write a custom builder for non-standard formats
+
+### RL: Identifying the Reward Signal
+
+For RL, you need a verifiable reward. Analyze the dataset to determine what makes an answer "correct":
+
+| Dataset Type | Reward Signal | Recipe |
+|--------------|--------------|--------|
+| Math (GSM8K, MATH) | Ground truth answer, extract with regex | `math_rl/` |
+| Code (LeetCode, HumanEval) | Test case execution | `code_rl/` |
+| Factual QA | Exact match or F1 against ground truth | `verifiers_rl/` |
+| Games | Win/lose/draw outcome | `multiplayer_rl/` |
+| No ground truth | LLM-as-judge rubric | `rubric/` |
+| Preference pairs | Chosen > Rejected | `preference/dpo/` |
+
+For math/code, the dataset should have:
+```json
+{"question": "...", "answer": "42"}  // or "solution" or "ground_truth"
+```
+
+For preference, the dataset should have:
+```json
+{"prompt": "...", "chosen": "...", "rejected": "..."}
+```
+
+### Example: Preparing an SFT Dataset
+
+```python
+from datasets import load_dataset
+from tinker_cookbook.supervised.common import TrainOnWhat
+from tinker_cookbook.supervised.data import HuggingFaceConversationBuilder
+
+# Load dataset
+ds = load_dataset("HuggingFaceH4/no_robots")
+
+# Check structure
+print(ds["train"][0])  # Inspect format
+
+# Create builder with appropriate settings
+dataset_builder = HuggingFaceConversationBuilder(
+    path="HuggingFaceH4/no_robots",
+    split="train",
+    messages_column="messages",
+    train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+    max_length=2048,
+)
+
+# For evaluation, create test split if needed
+test_builder = HuggingFaceConversationBuilder(
+    path="HuggingFaceH4/no_robots",
+    split="test",  # or create from train split
+    messages_column="messages",
+    train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+    max_length=2048,
+)
+```
+
+### Example: Preparing an RL Dataset
+
+```python
+from datasets import load_dataset
+
+# Load dataset
+ds = load_dataset("openai/gsm8k", "main")
+
+# Check structure - need question and answer
+print(ds["train"][0])
+# {'question': '...', 'answer': '#### 42'}
+
+# For math_rl, the recipe handles answer extraction via grade_answer()
+# Just need to provide the dataset path and answer column name
+```
 
 ---
 
