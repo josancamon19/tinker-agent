@@ -301,8 +301,8 @@ def render_bash_tool_call(tool_input: dict, time_str: str):
 
     # Strip tee wrapper for cleaner display
     display_command = command
-    if "| stdbuf -oL tee /tmp/tinker_bash_logs/" in command:
-        display_command = command.split(") 2>&1 | stdbuf")[0]
+    if "| stdbuf -oL tee" in command and ") 2>&1 |" in command:
+        display_command = command.split(") 2>&1 |")[0]
         if display_command.startswith("("):
             display_command = display_command[1:]
     st.code(display_command, language="bash")

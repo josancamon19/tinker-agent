@@ -173,9 +173,6 @@ def _create_stop_hook(session_id: str, cwd: Path | None = None):
     return on_stop
 
 
-# Directory for streaming bash logs
-BASH_LOGS_DIR = Path("/tmp/tinker_bash_logs")
-
 # Minimum timeout (ms) to enable streaming - 30 seconds
 MIN_TIMEOUT_FOR_STREAMING = 30000
 
@@ -278,15 +275,16 @@ def _create_can_use_tool_handler(
         if not command:
             return PermissionResultAllow(updated_input=input_data)
 
-        # Create log directory
-        BASH_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        # Create log directory in the run directory
+        bash_logs_dir = root_dir / "bash_logs" if root_dir else Path("/tmp/tinker_bash_logs")
+        bash_logs_dir.mkdir(parents=True, exist_ok=True)
 
         # Create unique log file for this tool call (use timestamp + hash since we don't have tool_use_id here)
         import hashlib
         import time
 
         tool_hash = hashlib.md5(f"{command}{time.time()}".encode()).hexdigest()[:12]
-        log_file = BASH_LOGS_DIR / f"{tool_hash}.log"
+        log_file = bash_logs_dir / f"{tool_hash}.log"
 
         # Clear any existing log file
         log_file.write_text("")
