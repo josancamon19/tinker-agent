@@ -331,7 +331,12 @@ def fmt_timeout(ms: int) -> str:
     return f"{ms // 1000}s"
 
 
-def render_bash_tool_call(tool_input: dict, time_str: str, is_pending: bool = False, log_file: str | None = None):
+def render_bash_tool_call(
+    tool_input: dict,
+    time_str: str,
+    is_pending: bool = False,
+    log_file: str | None = None,
+):
     """Render a Bash tool call with clean, compact UI."""
     command = tool_input.get("command", "")
     description = tool_input.get("description", "")
@@ -383,7 +388,9 @@ def render_bash_tool_call(tool_input: dict, time_str: str, is_pending: bool = Fa
                     max_lines = 50
                     if len(lines) > max_lines:
                         display_lines = lines[-max_lines:]
-                        truncated_msg = f"... [{len(lines) - max_lines} earlier lines]\n"
+                        truncated_msg = (
+                            f"... [{len(lines) - max_lines} earlier lines]\n"
+                        )
                     else:
                         display_lines = lines
                         truncated_msg = ""
@@ -393,7 +400,10 @@ def render_bash_tool_call(tool_input: dict, time_str: str, is_pending: bool = Fa
                         unsafe_allow_html=True,
                     )
                 else:
-                    st.markdown("<div class='cli-output empty' style='border-left-color: #d29922;'>⏳ Waiting for output...</div>", unsafe_allow_html=True)
+                    st.markdown(
+                        "<div class='cli-output empty' style='border-left-color: #d29922;'>⏳ Waiting for output...</div>",
+                        unsafe_allow_html=True,
+                    )
             except Exception:
                 pass
 
@@ -493,7 +503,10 @@ def render_tool_result(result: str, tool_name: str, is_error: bool, time_str: st
                 unsafe_allow_html=True,
             )
         if not stdout and not stderr:
-            st.markdown("<div class='cli-output empty'>✓ (no output)</div>", unsafe_allow_html=True)
+            st.markdown(
+                "<div class='cli-output empty'>✓ (no output)</div>",
+                unsafe_allow_html=True,
+            )
 
     # TodoWrite result - just show success, the call already showed the todos
     elif result_type == "todo_result":
@@ -503,7 +516,9 @@ def render_tool_result(result: str, tool_name: str, is_error: bool, time_str: st
     elif result_type == "file":
         content = parsed.get("content", "")
         if content:
-            st.code(content[:3000] + ("..." if len(content) > 3000 else ""), language=None)
+            st.code(
+                content[:3000] + ("..." if len(content) > 3000 else ""), language=None
+            )
 
     # Generic JSON
     elif result_type == "json":
@@ -527,7 +542,9 @@ def render_tool_result(result: str, tool_name: str, is_error: bool, time_str: st
                     unsafe_allow_html=True,
                 )
             else:
-                st.markdown(f"<code>{_escape_html(content)}</code>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<code>{_escape_html(content)}</code>", unsafe_allow_html=True
+                )
 
     # Empty
     elif result_type == "empty":
@@ -539,7 +556,12 @@ def _escape_html(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def render_event(event: dict, completed_tool_ids: set | None = None, trace_ended: bool = True, stream_log_files: dict | None = None):
+def render_event(
+    event: dict,
+    completed_tool_ids: set | None = None,
+    trace_ended: bool = True,
+    stream_log_files: dict | None = None,
+):
     """Render a single event compactly."""
     etype = event.get("type", "unknown")
     ts = event.get("timestamp", 0)
@@ -591,7 +613,9 @@ def render_event(event: dict, completed_tool_ids: set | None = None, trace_ended
 
         # Special rendering for specific tools
         if tool_name.lower() in {"bash", "shell", "execute", "run"}:
-            render_bash_tool_call(tool_input, time_str, is_pending=is_pending, log_file=log_file)
+            render_bash_tool_call(
+                tool_input, time_str, is_pending=is_pending, log_file=log_file
+            )
         elif tool_name.lower() in {"todowrite", "todo_write", "todo"}:
             render_todo_tool_call(tool_input, time_str)
         # Single param and short value -> inline
@@ -696,7 +720,12 @@ def render_trace(trace: dict):
 
     # Events
     for event in events:
-        render_event(event, completed_tool_ids=completed_tool_ids, trace_ended=ended is not None, stream_log_files=stream_log_files)
+        render_event(
+            event,
+            completed_tool_ids=completed_tool_ids,
+            trace_ended=ended is not None,
+            stream_log_files=stream_log_files,
+        )
 
     # Final error only (result is already shown as an event)
     if trace.get("error"):
@@ -776,7 +805,10 @@ def setup_run_directory(project_root: Path) -> Path:
 
     subprocess.run(
         ["uv", "init", "--no-workspace"],
-        cwd=runs_dir, env=env, check=True, capture_output=True
+        cwd=runs_dir,
+        env=env,
+        check=True,
+        capture_output=True,
     )
 
     # Update pyproject.toml
@@ -784,7 +816,7 @@ def setup_run_directory(project_root: Path) -> Path:
     content = pyproject.read_text()
     content = content.replace(
         "dependencies = []",
-        'dependencies = [\n    "tinker",\n    "tinker-cookbook",\n    "wandb",\n    "python-dotenv",\n]'
+        'dependencies = [\n    "tinker",\n    "tinker-cookbook",\n    "wandb",\n    "python-dotenv",\n]',
     )
     content += '\n[tool.uv.sources]\ntinker-cookbook = { git = "https://github.com/thinking-machines-lab/tinker-cookbook.git" }\n'
     pyproject.write_text(content)
@@ -799,6 +831,7 @@ def setup_run_directory(project_root: Path) -> Path:
 def run_agent_thread(prompt: str, runs_dir: Path, status_queue: Queue):
     """Run the agent in a background thread."""
     import sys
+
     src_path = Path(__file__).parent.parent
     if str(src_path) not in sys.path:
         sys.path.insert(0, str(src_path))
@@ -890,7 +923,8 @@ def main():
     # Main area
     if not st.session_state.selected_run and not st.session_state.agent_running:
         # Centered chat interface
-        st.markdown("""
+        st.markdown(
+            """
         <style>
             .chat-container {
                 display: flex;
@@ -913,7 +947,9 @@ def main():
             <div class="chat-title">🔧 Tinker Agent</div>
             <div class="chat-subtitle">Fine-tune language models with Tinker</div>
         </div>
-        """, unsafe_allow_html=True)
+        """,
+            unsafe_allow_html=True,
+        )
 
         # Chat input
         prompt = st.chat_input("What post-training task do you need help with?")
@@ -929,7 +965,7 @@ def main():
             thread = threading.Thread(
                 target=run_agent_thread,
                 args=(prompt, new_run_dir, st.session_state.status_queue),
-                daemon=True
+                daemon=True,
             )
             thread.start()
             st.rerun()
@@ -939,7 +975,10 @@ def main():
         if st.session_state.selected_run:
             # Status indicator
             if st.session_state.agent_running:
-                st.markdown('<span style="color: #d29922; animation: pulse 1s infinite;">● Running...</span>', unsafe_allow_html=True)
+                st.markdown(
+                    '<span style="color: #d29922; animation: pulse 1s infinite;">● Running...</span>',
+                    unsafe_allow_html=True,
+                )
 
             trace_file = runs_dir / st.session_state.selected_run / "traces.json"
 
@@ -977,6 +1016,7 @@ def main():
     # Auto-refresh
     try:
         from streamlit_autorefresh import st_autorefresh
+
         st_autorefresh(interval=500, key="trace_refresh")
     except ImportError:
         pass
