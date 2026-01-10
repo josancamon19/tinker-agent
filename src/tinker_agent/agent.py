@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import uuid
 from pathlib import Path
 
@@ -179,16 +180,91 @@ BASH_LOGS_DIR = Path("/tmp/tinker_bash_logs")
 MIN_TIMEOUT_FOR_STREAMING = 30000
 
 
-def _create_can_use_tool_handler(tracer: Tracer | None = None):
-    """Factory: creates a can_use_tool handler that modifies Bash commands for streaming."""
-    from claude_agent_sdk.types import PermissionResultAllow, ToolPermissionContext
+def _is_path_within_root(path_str: str, root_dir: Path) -> bool:
+    """Check if a path is within the allowed root directory."""
+    try:
+        # Resolve to absolute path (handles .., symlinks, etc.)
+        path = Path(path_str).resolve()
+        root = root_dir.resolve()
+        # Check if path is within root
+        return path == root or root in path.parents
+    except (OSError, ValueError):
+        # Invalid path
+        return False
+
+
+def _extract_paths_from_input(
+    tool_name: str, input_data: dict, root_dir: Path | None = None
+) -> list[str]:
+    """Extract file/directory paths from tool input based on tool type."""
+    paths = []
+    tool_lower = tool_name.lower()
+
+    # File operation tools with explicit path parameters
+    path_params = ["file_path", "path", "notebook_path", "directory"]
+    for param in path_params:
+        if param in input_data and input_data[param]:
+            paths.append(input_data[param])
+
+    # Bash/shell commands need path extraction from command string
+    if tool_lower in {"bash", "shell", "execute", "run"}:
+        command = input_data.get("command", "")
+
+        # Detect ~ or $HOME (home directory) - always outside sandbox
+        if (
+            re.search(r'(?:^|[\s"\'=])~(?:/|[\s"\';&|><]|$)', command)
+            or "$HOME" in command
+        ):
+            # Return a path guaranteed to be outside sandbox
+            paths.append("/home/user")
+
+        # Match absolute paths (Unix-style)
+        abs_paths = re.findall(r'(?:^|[\s"\'=])(/[^\s"\';&|><]+)', command)
+        paths.extend(abs_paths)
+
+        # Detect relative paths with .. that could escape sandbox
+        if root_dir:
+            # Find relative paths in the command
+            rel_paths = re.findall(r'(?:^|[\s"\'=])(\.\.[^\s"\';&|><]*)', command)
+            for rel_path in rel_paths:
+                # Resolve relative to root_dir to check if it escapes
+                try:
+                    resolved = (root_dir / rel_path).resolve()
+                    paths.append(str(resolved))
+                except (OSError, ValueError):
+                    pass
+
+    return paths
+
+
+def _create_can_use_tool_handler(
+    root_dir: Path | None = None, tracer: Tracer | None = None
+):
+    """Factory: creates a can_use_tool handler that validates paths and modifies Bash commands."""
+    from claude_agent_sdk.types import (
+        PermissionResultAllow,
+        PermissionResultDeny,
+        ToolPermissionContext,
+    )
 
     async def can_use_tool(
-        tool_name: str,
-        input_data: dict,
-        context: ToolPermissionContext
-    ) -> PermissionResultAllow:
-        """Permission handler that wraps long-running Bash commands for streaming output."""
+        tool_name: str, input_data: dict, context: ToolPermissionContext
+    ) -> PermissionResultAllow | PermissionResultDeny:
+        """Permission handler that validates paths and wraps long-running Bash commands."""
+
+        # Path sandboxing: deny access outside root directory
+        if root_dir is not None:
+            paths = _extract_paths_from_input(tool_name, input_data, root_dir=root_dir)
+            for path_str in paths:
+                if not _is_path_within_root(path_str, root_dir):
+                    console.print(
+                        f"[bold red]🚫 BLOCKED: {tool_name} tried to access '{path_str}' "
+                        f"outside sandbox root '{root_dir}'[/bold red]"
+                    )
+                    return PermissionResultDeny(
+                        message=f"Access denied: path '{path_str}' is outside the allowed directory '{root_dir}'. "
+                        f"You can only access files within '{root_dir}'."
+                    )
 
         # Only intercept Bash commands with significant timeout
         if tool_name.lower() not in {"bash", "shell", "execute", "run"}:
@@ -208,6 +284,7 @@ def _create_can_use_tool_handler(tracer: Tracer | None = None):
         # Create unique log file for this tool call (use timestamp + hash since we don't have tool_use_id here)
         import hashlib
         import time
+
         tool_hash = hashlib.md5(f"{command}{time.time()}".encode()).hexdigest()[:12]
         log_file = BASH_LOGS_DIR / f"{tool_hash}.log"
 
@@ -222,11 +299,14 @@ def _create_can_use_tool_handler(tracer: Tracer | None = None):
 
         # Log to tracer so viewer knows where to find the log
         if tracer:
-            tracer.add_event("bash_stream_start", {
-                "tool_id": tool_hash,
-                "log_file": str(log_file),
-                "original_command": command,
-            })
+            tracer.add_event(
+                "bash_stream_start",
+                {
+                    "tool_id": tool_hash,
+                    "log_file": str(log_file),
+                    "original_command": command,
+                },
+            )
 
         # Return with modified input
         return PermissionResultAllow(
@@ -275,7 +355,8 @@ async def run_agent(config: Config) -> None:
         system_prompt_config = {"type": "preset", "preset": "claude_code"}
 
     # TODO: check planning mode
-    # TODO: when in a sandbox, make sure it can't go outside it's directory
+    # Sandbox: restrict agent to cwd directory
+    root_dir = Path(config.cwd).resolve() if config.cwd else Path.cwd().resolve()
     options = ClaudeAgentOptions(
         tools={"type": "preset", "preset": "claude_code"},
         system_prompt=system_prompt_config,
@@ -283,8 +364,8 @@ async def run_agent(config: Config) -> None:
         permission_mode="acceptEdits",  # Use acceptEdits so can_use_tool still runs
         mcp_servers={},
         continue_conversation=False,
-        cwd=config.cwd or str(Path.cwd()),
-        can_use_tool=_create_can_use_tool_handler(tracer=tracer),
+        cwd=str(root_dir),
+        can_use_tool=_create_can_use_tool_handler(root_dir=root_dir, tracer=tracer),
         hooks={
             "PostToolUse": [
                 HookMatcher(
