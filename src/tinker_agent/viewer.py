@@ -553,6 +553,59 @@ def render_trace(trace: dict):
     if trace.get("error"):
         st.error(f"❌ {trace['error']}")
 
+    # Auto-scroll: track event count and scroll when new events appear
+    event_count = len(events)
+    prev_count = st.session_state.get("prev_event_count", 0)
+    is_live = not ended  # Still running
+
+    if event_count > prev_count or (is_live and event_count > 0):
+        st.session_state.prev_event_count = event_count
+        # Inject scroll script via components
+        import streamlit.components.v1 as components
+
+        components.html(
+            f"""
+            <script>
+                console.log('[Trace Viewer] Attempting scroll, events: {event_count}');
+                (function() {{
+                    function scrollToBottom() {{
+                        const parent = window.parent;
+                        if (!parent) {{
+                            console.log('[Trace Viewer] No parent window');
+                            return;
+                        }}
+                        const doc = parent.document;
+                        const selectors = [
+                            '[data-testid="stAppViewContainer"]',
+                            '[data-testid="stMain"]',
+                            'section.stMain',
+                            'section.main',
+                            '.main',
+                            '.block-container'
+                        ];
+                        for (const sel of selectors) {{
+                            const el = doc.querySelector(sel);
+                            if (el) {{
+                                console.log('[Trace Viewer] Found:', sel, 'scrollHeight:', el.scrollHeight, 'clientHeight:', el.clientHeight);
+                                if (el.scrollHeight > el.clientHeight) {{
+                                    el.scrollTop = el.scrollHeight;
+                                    console.log('[Trace Viewer] Scrolled via', sel);
+                                    return;
+                                }}
+                            }}
+                        }}
+                        doc.body.scrollTop = doc.body.scrollHeight;
+                        doc.documentElement.scrollTop = doc.documentElement.scrollHeight;
+                        parent.scrollTo(0, doc.documentElement.scrollHeight);
+                        console.log('[Trace Viewer] Used body/window scroll');
+                    }}
+                    setTimeout(scrollToBottom, 150);
+                }})();
+            </script>
+            """,
+            height=1,
+        )
+
 
 def main():
     """Main viewer application."""
@@ -572,6 +625,8 @@ def main():
         st.session_state.selected_run = None
     if "trace_idx" not in st.session_state:
         st.session_state.trace_idx = 0
+    if "prev_event_count" not in st.session_state:
+        st.session_state.prev_event_count = 0
 
     # Sidebar with sessions list
     with st.sidebar:
@@ -593,6 +648,7 @@ def main():
                 ):
                     st.session_state.selected_run = name
                     st.session_state.trace_idx = 0
+                    st.session_state.prev_event_count = 0
                     st.rerun()
 
     # Main area
@@ -621,6 +677,8 @@ def main():
                         format_func=lambda i: f"{traces[i].get('id', '?')}: {traces[i].get('prompt', '')[:40]}...",
                         label_visibility="collapsed",
                     )
+                    if idx != st.session_state.trace_idx:
+                        st.session_state.prev_event_count = 0
                     st.session_state.trace_idx = idx
                 else:
                     idx = 0
