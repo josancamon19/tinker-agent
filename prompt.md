@@ -445,6 +445,44 @@ If the task doesn't fit any category, ask the user for clarification about their
 
 Before training, analyze the dataset to make the right configuration decisions. Most datasets come from HuggingFace or are provided as JSONL files.
 
+### Dataset Size Limits
+
+**Hard limits to control cost and training time:**
+
+| Split          | Max Rows                          |
+| -------------- | --------------------------------- |
+| **Training**   | 20,000                            |
+| **Evaluation** | 10% of training size (max 2,000)  |
+
+**Always sample datasets down to these limits:**
+
+```python
+from datasets import load_dataset
+
+# Load and sample
+ds = load_dataset("dataset/name", split="train")
+total_rows = len(ds)
+
+# Apply training limit
+train_size = min(total_rows, 20_000)
+ds = ds.shuffle(seed=42).select(range(train_size))
+
+# Split for eval (10% of training, max 2000)
+eval_size = min(int(train_size * 0.1), 2_000)
+split = ds.train_test_split(test_size=eval_size, seed=42)
+train_data = split["train"]
+eval_data = split["test"]
+
+print(f"Original: {total_rows:,} rows")
+print(f"Training: {len(train_data):,} rows")
+print(f"Eval: {len(eval_data):,} rows")
+```
+
+**Why these limits:**
+- SFT sees diminishing returns after 10-20k diverse examples
+- Keeps training fast and cost-effective
+- Eval doesn't need to be large to measure NLL accurately
+
 ### Train/Test Splits
 
 Check if the dataset has a predefined split:
@@ -487,12 +525,12 @@ class TrainOnWhat(StrEnum):
 
 **Guidelines:**
 
-| Dataset Type | Recommended `train_on_what` | Why |
-|--------------|----------------------------|-----|
-| Single-turn instruction (prompt→response) | `LAST_ASSISTANT_MESSAGE` | Only train on the response |
-| Multi-turn chat | `ALL_ASSISTANT_MESSAGES` | Learn all assistant behaviors |
-| Distillation from reasoning traces | `LAST_ASSISTANT_MESSAGE` | Learn the reasoning chain |
-| System prompt baking | `ALL_TOKENS` | Learn to internalize the system prompt |
+| Dataset Type                              | Recommended `train_on_what` | Why                                    |
+| ----------------------------------------- | --------------------------- | -------------------------------------- |
+| Single-turn instruction (prompt→response) | `LAST_ASSISTANT_MESSAGE`    | Only train on the response             |
+| Multi-turn chat                           | `ALL_ASSISTANT_MESSAGES`    | Learn all assistant behaviors          |
+| Distillation from reasoning traces        | `LAST_ASSISTANT_MESSAGE`    | Learn the reasoning chain              |
+| System prompt baking                      | `ALL_TOKENS`                | Learn to internalize the system prompt |
 
 Default is `LAST_ASSISTANT_MESSAGE` which works for most instruction-following datasets.
 
@@ -528,14 +566,14 @@ Use the appropriate dataset builder:
 
 For RL, you need a verifiable reward. Analyze the dataset to determine what makes an answer "correct":
 
-| Dataset Type | Reward Signal | Recipe |
-|--------------|--------------|--------|
-| Math (GSM8K, MATH) | Ground truth answer, extract with regex | `math_rl/` |
-| Code (LeetCode, HumanEval) | Test case execution | `code_rl/` |
-| Factual QA | Exact match or F1 against ground truth | `verifiers_rl/` |
-| Games | Win/lose/draw outcome | `multiplayer_rl/` |
-| No ground truth | LLM-as-judge rubric | `rubric/` |
-| Preference pairs | Chosen > Rejected | `preference/dpo/` |
+| Dataset Type               | Reward Signal                           | Recipe            |
+| -------------------------- | --------------------------------------- | ----------------- |
+| Math (GSM8K, MATH)         | Ground truth answer, extract with regex | `math_rl/`        |
+| Code (LeetCode, HumanEval) | Test case execution                     | `code_rl/`        |
+| Factual QA                 | Exact match or F1 against ground truth  | `verifiers_rl/`   |
+| Games                      | Win/lose/draw outcome                   | `multiplayer_rl/` |
+| No ground truth            | LLM-as-judge rubric                     | `rubric/`         |
+| Preference pairs           | Chosen > Rejected                       | `preference/dpo/` |
 
 For math/code, the dataset should have:
 ```json
