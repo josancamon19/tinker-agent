@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 
 import chz
-from claude_agent_sdk import query, ClaudeAgentOptions, Message, HookMatcher
+from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions, Message, HookMatcher
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -84,20 +84,21 @@ def _create_log_tool_output_hook(session_id: str, tracer: Tracer | None = None):
         state = _session_state.get(session_id, {})
 
         tool_name = input_data.get("tool_name", "unknown")
-        tool_result = input_data.get("tool_result", "")
+        # SDK uses "tool_response" not "tool_result" for PostToolUse hooks
+        tool_response = input_data.get("tool_response", "")
         is_error = input_data.get("is_error", False)
 
         # Log to tracer (captures the actual tool output!)
         if tracer:
             tracer.log_tool_result(
                 tool_id=tool_use_id,
-                result=tool_result,
+                result=tool_response,
                 is_error=is_error,
                 tool_name=tool_name,
             )
 
         # Calculate size of this tool's output
-        result_str = str(tool_result)
+        result_str = str(tool_response)
         result_chars = len(result_str)
         state["tool_output_chars"] = state.get("tool_output_chars", 0) + result_chars
         _session_state[session_id] = state
@@ -187,16 +188,13 @@ def _create_validate_on_stop_hook(session_id: str, cwd: Path | None = None):
                 )
                 return {}  # Allow stop
 
-            # Retry - continue the agent
+            # Retry - continue the agent using top-level fields (not hookSpecificOutput for Stop hook)
             console.print(
                 f"[yellow]⚠️ Validation failed (attempt {retry_count}/{MAX_VALIDATION_RETRIES}), retrying...[/yellow]"
             )
             return {
-                "hookSpecificOutput": {
-                    "hookEventName": input_data["hook_event_name"],
-                    "decision": "continue",
-                    "updatedStopReason": f"Validation failed: {error_summary}. Please fix these issues.",
-                }
+                "continue": True,
+                "systemMessage": f"Validation failed: {error_summary}. Please fix these issues.",
             }
 
         # Validation passed, allow stop
@@ -275,14 +273,17 @@ async def run_agent(config: Config) -> None:
     error_text = None
     cwd_path = Path(config.cwd) if config.cwd else None
     try:
-        async for message in query(prompt=config.prompt, options=options):
-            _print_message(message, verbose=config.verbose)
-            # Record to tracer
-            if tracer:
-                tracer.record_message(message)
-                # Capture final result
-                if hasattr(message, "result") and message.result:
-                    result_text = message.result
+        # Use ClaudeSDKClient instead of query() to support hooks
+        async with ClaudeSDKClient(options=options) as client:
+            await client.query(config.prompt)
+            async for message in client.receive_response():
+                _print_message(message, verbose=config.verbose)
+                # Record to tracer
+                if tracer:
+                    tracer.record_message(message)
+                    # Capture final result
+                    if hasattr(message, "result") and message.result:
+                        result_text = message.result
     except Exception as e:
         error_text = str(e)
         # On error/crash, run validation to check if we should continue

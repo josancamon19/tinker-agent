@@ -1,5 +1,6 @@
 """Streamlit trace viewer for agent executions."""
 
+import ast
 import json
 from datetime import datetime
 from pathlib import Path
@@ -225,6 +226,39 @@ st.markdown(
     .todo-item.completed { color: #3fb950; }
     .todo-item.in-progress { color: #58a6ff; }
     .todo-item.pending { color: #8b949e; }
+
+    /* CLI output styling */
+    .cli-output {
+        background: #0d1117;
+        border-left: 3px solid #30363d;
+        padding: 8px 12px;
+        margin: 4px 0;
+        font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+        font-size: 0.8rem;
+        line-height: 1.4;
+        overflow-x: auto;
+        max-height: 400px;
+        overflow-y: auto;
+    }
+    .cli-output pre {
+        margin: 0;
+        padding: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        color: #c9d1d9;
+    }
+    .cli-output.stderr {
+        border-left-color: #f85149;
+        background: #1a0d0d;
+    }
+    .cli-output.stderr pre {
+        color: #f85149;
+    }
+    .cli-output.empty {
+        color: #3fb950;
+        padding: 4px 12px;
+        font-size: 0.75rem;
+    }
 </style>
 """,
     unsafe_allow_html=True,
@@ -348,6 +382,117 @@ def render_todo_tool_call(tool_input: dict, time_str: str):
     st.markdown(todo_html, unsafe_allow_html=True)
 
 
+def parse_tool_result(result: str) -> dict:
+    """Parse tool result, extracting stdout/stderr if present."""
+    if not result:
+        return {"type": "empty"}
+
+    parsed = None
+
+    # Try to parse as JSON first
+    try:
+        parsed = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # If JSON failed, try Python literal (handles single quotes from repr)
+    if parsed is None:
+        try:
+            parsed = ast.literal_eval(result)
+        except (ValueError, SyntaxError):
+            pass
+
+    # Process parsed dict
+    if isinstance(parsed, dict):
+        # Bash/shell output format
+        if "stdout" in parsed or "stderr" in parsed:
+            return {
+                "type": "shell",
+                "stdout": parsed.get("stdout", ""),
+                "stderr": parsed.get("stderr", ""),
+                "exit_code": parsed.get("exitCode") or parsed.get("exit_code"),
+            }
+        # TodoWrite result
+        if "oldTodos" in parsed or "newTodos" in parsed:
+            return {"type": "todo_result", "data": parsed}
+        # File content
+        if "content" in parsed and len(parsed) <= 3:
+            return {"type": "file", "content": parsed.get("content", "")}
+        # Generic JSON
+        return {"type": "json", "data": parsed}
+
+    # Plain text
+    return {"type": "text", "content": result}
+
+
+def render_tool_result(result: str, tool_name: str, is_error: bool, time_str: str):
+    """Render tool result in a clean, CLI-like format."""
+    parsed = parse_tool_result(result)
+    result_type = parsed.get("type", "text")
+
+    # Shell output (Bash, etc.)
+    if result_type == "shell":
+        stdout = parsed.get("stdout", "")
+        stderr = parsed.get("stderr", "")
+        exit_code = parsed.get("exit_code")
+
+        if stdout:
+            st.markdown(
+                f"<div class='cli-output'><pre>{_escape_html(stdout[:5000])}</pre></div>",
+                unsafe_allow_html=True,
+            )
+        if stderr:
+            st.markdown(
+                f"<div class='cli-output stderr'><pre>{_escape_html(stderr[:2000])}</pre></div>",
+                unsafe_allow_html=True,
+            )
+        if not stdout and not stderr:
+            st.markdown("<div class='cli-output empty'>✓ (no output)</div>", unsafe_allow_html=True)
+
+    # TodoWrite result - just show success, the call already showed the todos
+    elif result_type == "todo_result":
+        pass  # Don't show anything, the tool call already rendered the todos
+
+    # File content
+    elif result_type == "file":
+        content = parsed.get("content", "")
+        if content:
+            st.code(content[:3000] + ("..." if len(content) > 3000 else ""), language=None)
+
+    # Generic JSON
+    elif result_type == "json":
+        data = parsed.get("data", {})
+        # For small JSON, show inline
+        json_str = json.dumps(data, indent=2)
+        if len(json_str) < 500:
+            st.code(json_str, language="json")
+        else:
+            with st.expander("Output", expanded=False):
+                st.code(json_str, language="json")
+
+    # Plain text
+    elif result_type == "text":
+        content = parsed.get("content", "")
+        if content:
+            # Check if it looks like CLI output
+            if "\n" in content or len(content) > 100:
+                st.markdown(
+                    f"<div class='cli-output'><pre>{_escape_html(content[:3000])}</pre></div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(f"<code>{_escape_html(content)}</code>", unsafe_allow_html=True)
+
+    # Empty
+    elif result_type == "empty":
+        st.markdown("<div class='cli-output empty'>✓</div>", unsafe_allow_html=True)
+
+
+def _escape_html(text: str) -> str:
+    """Escape HTML special characters."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def render_event(event: dict):
     """Render a single event compactly."""
     etype = event.get("type", "unknown")
@@ -417,32 +562,8 @@ def render_event(event: dict):
         is_error = data.get("is_error", False)
         tool_name = data.get("tool_name", "")
 
-        # Command tools (Bash, Shell, etc.) show output expanded
-        is_command_tool = tool_name.lower() in {"bash", "shell", "execute", "run"}
-
-        if is_command_tool:
-            # Show command output prominently
-            icon_display = "🔴" if is_error else "📺"
-            label = "stderr" if is_error else "stdout"
-            st.markdown(
-                f"<div class='event-header'>{icon_display} <b>{label}</b> <span>{time_str}</span></div>",
-                unsafe_allow_html=True,
-            )
-            # Show first 5000 chars expanded for command output
-            display_result = result[:5000] + (
-                "\n... [truncated]" if len(result) > 5000 else ""
-            )
-            st.code(display_result, language="bash")
-        else:
-            # Other tools: show collapsed
-            st.markdown(
-                f"<div class='event-header'>{icon} Result {'❌' if is_error else ''} <span>{time_str}</span></div>",
-                unsafe_allow_html=True,
-            )
-            with st.expander("Output", expanded=False):
-                st.code(
-                    result[:3000] + ("..." if len(result) > 3000 else ""), language=None
-                )
+        # Use the new clean renderer
+        render_tool_result(result, tool_name, is_error, time_str)
 
     elif etype == "thinking":
         content = data.get("content", "")
