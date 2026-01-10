@@ -121,6 +121,75 @@ def setup_project(runs_dir: Path) -> None:
     console.print("[green]✓[/green] Project setup complete")
 
 
+def setup_run_directory(project_root: Path) -> Path:
+    """Create a new run directory with uv project setup."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    runs_dir = project_root / "runs" / timestamp
+    runs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy .env
+    env_file = project_root / ".env"
+    if env_file.exists():
+        shutil.copy(env_file, runs_dir / ".env")
+
+    # Setup project
+    setup_project(runs_dir)
+
+    return runs_dir
+
+
+def run_training_agent(
+    dataset: str, task_type: str, model: str, project_root: Path | None = None
+) -> None:
+    """
+    Run the agent with the given configuration.
+
+    Args:
+        dataset: HuggingFace dataset name (e.g., "HuggingFaceFW/fineweb")
+        task_type: Task type ("sft", "rl", or "cpt")
+        model: Model name
+        project_root: Project root directory (defaults to cwd)
+    """
+    if project_root is None:
+        project_root = Path.cwd()
+
+    # Setup run directory
+    console.print("[cyan]Setting up environment...[/cyan]")
+    runs_dir = setup_run_directory(project_root)
+
+    # Construct prompt
+    prompt = f"Do {task_type.upper()} training on {model} using dataset {dataset}"
+
+    # Trace file path
+    trace_path = runs_dir / TRACES_FILE
+
+    console.print()
+    console.print(
+        Panel(
+            f"[bold]Dataset:[/bold] {dataset}\n"
+            f"[bold]Task Type:[/bold] {task_type}\n"
+            f"[bold]Model:[/bold] {model}\n"
+            f"[bold]Run Directory:[/bold] {runs_dir}",
+            title="[bold cyan]Starting Agent[/bold cyan]",
+            border_style="cyan",
+        )
+    )
+    console.print()
+
+    # Run agent
+    config = Config(prompt=prompt, cwd=str(runs_dir), trace_path=str(trace_path))
+
+    try:
+        asyncio.run(run_agent(config))
+        console.print("\n[green]✓ Agent completed successfully[/green]")
+    except Exception as e:
+        console.print(f"\n[red]✗ Agent error: {e}[/red]")
+        raise
+
+    # Update runs index
+    update_runs_index(project_root)
+
+
 def main() -> None:
     """CLI entrypoint with interactive prompt."""
     # Create timestamped runs directory (resolve before chdir)

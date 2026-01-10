@@ -1,6 +1,8 @@
 """Interactive and non-interactive CLI for tinker-agent."""
 
 import os
+import subprocess
+import time
 from enum import Enum
 from pathlib import Path
 
@@ -12,6 +14,63 @@ from rich.table import Table
 from rich.text import Text
 
 console = Console()
+
+
+def is_viewer_running() -> bool:
+    """Check if streamlit viewer is running on default port."""
+    try:
+        import socket
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        result = sock.connect_ex(("127.0.0.1", 8501))
+        sock.close()
+        return result == 0
+    except Exception:
+        return False
+
+
+def launch_viewer() -> str:
+    """Launch streamlit viewer if not already running. Returns URL."""
+    viewer_url = "http://localhost:8501"
+
+    if is_viewer_running():
+        console.print(f"[dim]Viewer already running at {viewer_url}[/dim]")
+        return viewer_url
+
+    console.print("[cyan]Launching trace viewer...[/cyan]")
+
+    # Launch streamlit in background
+    try:
+        subprocess.Popen(
+            [
+                "streamlit",
+                "run",
+                str(Path(__file__).parent / "viewer.py"),
+                "--server.port=8501",
+                "--server.headless=true",
+                "--browser.gatherUsageStats=false",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # Wait for viewer to start
+        for _ in range(10):
+            time.sleep(0.5)
+            if is_viewer_running():
+                console.print(f"[green]✓ Viewer launched at {viewer_url}[/green]")
+                return viewer_url
+
+        console.print(f"[yellow]Viewer may be starting... Check {viewer_url}[/yellow]")
+    except FileNotFoundError:
+        console.print(
+            "[yellow]streamlit not found. Install with: pip install streamlit[/yellow]"
+        )
+    except Exception as e:
+        console.print(f"[yellow]Could not launch viewer: {e}[/yellow]")
+
+    return viewer_url
+
 
 # Environment variables configuration
 ENV_VARS = {
@@ -182,12 +241,16 @@ def interactive_select_model() -> str:
             idx = int(choice)
             if 1 <= idx <= len(AVAILABLE_MODELS):
                 return AVAILABLE_MODELS[idx - 1]["name"]
-            console.print(f"[red]Invalid choice. Enter a number between 1 and {len(AVAILABLE_MODELS)}[/red]")
+            console.print(
+                f"[red]Invalid choice. Enter a number between 1 and {len(AVAILABLE_MODELS)}[/red]"
+            )
         # Check if it's a valid model name
         elif choice in MODEL_NAMES:
             return choice
         else:
-            console.print(f"[red]Invalid choice. Enter a number between 1 and {len(AVAILABLE_MODELS)} or a valid model name[/red]")
+            console.print(
+                f"[red]Invalid choice. Enter a number between 1 and {len(AVAILABLE_MODELS)} or a valid model name[/red]"
+            )
 
 
 def interactive_get_dataset() -> str:
@@ -424,6 +487,22 @@ def setup() -> None:
     run_setup()
 
 
+def viewer() -> None:
+    """Launch the trace viewer."""
+    viewer_url = launch_viewer()
+    console.print(f"\n[bold]Open viewer at:[/bold] {viewer_url}")
+    console.print("[dim]Press Ctrl+C to exit[/dim]\n")
+
+    # Keep process alive
+    try:
+        import time
+
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Exiting...[/dim]")
+
+
 def main() -> None:
     """CLI entrypoint supporting both interactive and non-interactive modes."""
     import sys
@@ -431,6 +510,11 @@ def main() -> None:
     # Handle 'setup' subcommand
     if len(sys.argv) > 1 and sys.argv[1] == "setup":
         run_setup()
+        return
+
+    # Handle 'viewer' subcommand
+    if len(sys.argv) > 1 and sys.argv[1] == "viewer":
+        viewer()
         return
 
     # Check if running with chz arguments (non-interactive)
@@ -442,16 +526,23 @@ def main() -> None:
                 sys.exit(1)
 
             config = run_non_interactive(config)
-            console.print(
-                Panel(
-                    f"[bold]Task Type:[/bold] {config.task_type}\n"
-                    f"[bold]Model:[/bold] {config.model}\n"
-                    f"[bold]Dataset:[/bold] {config.dataset}",
-                    title="[bold green]Running with configuration[/bold green]",
-                    border_style="green",
+
+            # Launch viewer
+            viewer_url = launch_viewer()
+
+            # Import and run agent
+            from tinker_agent.main import run_training_agent
+
+            try:
+                run_training_agent(
+                    dataset=config.dataset,
+                    task_type=config.task_type,
+                    model=config.model,
                 )
-            )
-            # TODO: Launch agent with this config
+                console.print(f"\n[bold]View results at:[/bold] {viewer_url}\n")
+            except Exception as e:
+                console.print(f"\n[red]Error: {e}[/red]")
+                sys.exit(1)
 
         chz.entrypoint(run_with_config)
     else:
@@ -462,8 +553,23 @@ def main() -> None:
                 sys.exit(1)
 
             config = run_interactive()
-            console.print("\n[bold green]Starting fine-tuning...[/bold green]")
-            # TODO: Launch agent with this config
+
+            # Launch viewer
+            viewer_url = launch_viewer()
+
+            # Import and run agent
+            from tinker_agent.main import run_training_agent
+
+            try:
+                run_training_agent(
+                    dataset=config.dataset,
+                    task_type=config.task_type,
+                    model=config.model,
+                )
+                console.print(f"\n[bold]View results at:[/bold] {viewer_url}\n")
+            except Exception as e:
+                console.print(f"\n[red]Error: {e}[/red]")
+                sys.exit(1)
         except KeyboardInterrupt:
             console.print("\n[dim]Cancelled[/dim]")
         except ValueError as e:

@@ -34,7 +34,7 @@ dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23.0", "build>=1.0.0", "twine>=4.0.0"
 [project.scripts]
 tinker-agent = "tinker_agent.cli:main"
 tinker-agent-setup = "tinker_agent.cli:setup"
-tinker-viewer = "tinker_agent.viewer_cli:main"
+tinker-agent-viewer = "tinker_agent.cli:viewer"
 
 [build-system]
 requires = ["hatchling"]
