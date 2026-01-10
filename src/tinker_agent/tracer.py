@@ -89,7 +89,12 @@ class Tracer:
 
         self.add_event(
             "tool_result",
-            {"tool_id": tool_id, "result": result_str, "is_error": is_error, "tool_name": tool_name},
+            {
+                "tool_id": tool_id,
+                "result": result_str,
+                "is_error": is_error,
+                "tool_name": tool_name,
+            },
         )
 
     def log_thinking(self, thinking: str) -> None:

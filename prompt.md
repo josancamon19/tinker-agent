@@ -445,14 +445,125 @@ If the task doesn't fit any category, ask the user for clarification about their
 
 Before training, analyze the dataset to make the right configuration decisions. Most datasets come from HuggingFace or are provided as JSONL files.
 
+### Handling Local Directories as Datasets
+
+When a user provides a local directory path instead of a HuggingFace dataset or JSONL file, you may need to **convert the raw documents into SFT training data**.
+
+**Detect when conversion is needed:**
+- Path points to a folder containing raw files (`.md`, `.txt`, `.py`, `.json`, etc.)
+- Files don't have SFT structure (`messages` array or `prompt/completion` pairs)
+
+**Conversion process:**
+
+1. **Crawl the directory** — Read all relevant files recursively
+2. **Chunk content** — Split large files into coherent sections (~500-1000 tokens)
+3. **Generate Q&A pairs** — For each chunk, synthesize question-answer pairs that the content answers
+4. **Save as JSONL** — Format as chat messages for SFT
+
+**Target: Generate at least 100 rows, ideally 1,000 rows** of synthetic training data.
+
+**Output format:**
+```json
+{"messages": [
+  {"role": "user", "content": "How does the authentication flow work?"},
+  {"role": "assistant", "content": "The auth flow uses OAuth2 with Keycloak. Users authenticate via /auth/login which returns a JWT token..."}
+]}
+```
+
+**Example conversion script:**
+
+```python
+import json
+from pathlib import Path
+
+def crawl_directory(directory: str, extensions: list[str] = None) -> list[dict]:
+    """Read files from directory."""
+    if extensions is None:
+        extensions = [".md", ".txt", ".py", ".js", ".ts", ".json"]
+
+    docs = []
+    for path in Path(directory).rglob("*"):
+        if path.suffix in extensions and path.is_file():
+            content = path.read_text(encoding="utf-8", errors="ignore")
+            if content.strip():
+                docs.append({"path": str(path), "filename": path.name, "content": content})
+    return docs
+
+def chunk_content(doc: dict, max_tokens: int = 800) -> list[dict]:
+    """Split document into chunks."""
+    content = doc["content"]
+    chunks = []
+
+    # Split by double newlines or headers
+    sections = content.split("\n\n")
+    current = ""
+
+    for section in sections:
+        if len((current + section).split()) > max_tokens:
+            if current:
+                chunks.append({"source": doc["filename"], "content": current.strip()})
+            current = section
+        else:
+            current += "\n\n" + section
+
+    if current:
+        chunks.append({"source": doc["filename"], "content": current.strip()})
+
+    return [c for c in chunks if len(c["content"]) > 50]
+
+async def synthesize_pairs(chunk: dict, completer, num_pairs: int = 3) -> list[dict]:
+    """Generate Q&A pairs from content using an LLM."""
+    prompt = f"""Given this content, generate {num_pairs} question-answer pairs.
+
+Content from "{chunk['source']}":
+---
+{chunk['content']}
+---
+
+Generate diverse questions (factual, how-to, explanatory) that this content answers.
+Return as JSON array: [{{"q": "question", "a": "answer"}}]"""
+
+    response = await completer(prompt)
+    pairs = json.loads(response)
+
+    return [
+        {"messages": [
+            {"role": "user", "content": p["q"]},
+            {"role": "assistant", "content": p["a"]}
+        ]}
+        for p in pairs
+    ]
+
+async def convert_directory_to_sft(directory: str, output_path: str, target_rows: int = 1000):
+    """Convert a directory of documents to SFT training data."""
+    docs = crawl_directory(directory)
+    chunks = [c for doc in docs for c in chunk_content(doc)]
+    pairs_per_chunk = max(1, target_rows // len(chunks))
+
+    all_pairs = []
+    for chunk in chunks:
+        pairs = await synthesize_pairs(chunk, completer, num_pairs=pairs_per_chunk)
+        all_pairs.extend(pairs)
+        if len(all_pairs) >= target_rows:
+            break
+
+    with open(output_path, "w") as f:
+        for pair in all_pairs:
+            f.write(json.dumps(pair) + "\n")
+
+    print(f"Generated {len(all_pairs)} examples → {output_path}")
+```
+
+After conversion, proceed with standard SFT training using the generated JSONL file.
+
 ### Dataset Size Limits
 
 **Hard limits to control cost and training time:**
 
-| Split          | Max Rows                          |
-| -------------- | --------------------------------- |
-| **Training**   | 20,000                            |
-| **Evaluation** | 10% of training size (max 2,000)  |
+| Split          | Max Rows                         |
+| -------------- | -------------------------------- |
+| **Training**   | 20,000                           |
+| **Evaluation** | 10% of training size (max 2,000) |
 
 **CRITICAL: Always use `streaming=True`** to avoid downloading massive datasets (some are 100GB+):
 

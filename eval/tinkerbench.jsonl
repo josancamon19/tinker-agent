@@ -7,4 +7,3 @@
 {"dataset": "open-thoughts/OpenThoughts-Agent-v1-RL", "task": "RL", "model": "meta-llama/Llama-3.2-3B"}
 {"dataset": "livecodebench/code_generation_lite", "task": "RL", "model": "Qwen/Qwen3-4B-Instruct-2507"}
 {"dataset": "allenai/ifbench", "task": "RL", "model": "meta-llama/Llama-3.2-1B"}
-
