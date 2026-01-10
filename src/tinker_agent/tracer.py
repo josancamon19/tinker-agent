@@ -149,9 +149,11 @@ class Tracer:
         if not self.current_trace:
             return
 
-        # Handle final result
+        # Handle final result (only record once)
         if hasattr(message, "result") and message.result:
-            self.add_event("result", {"content": message.result})
+            # Skip if we already recorded a result event
+            if not any(e.type == "result" for e in self.current_trace.events):
+                self.add_event("result", {"content": message.result})
             return
 
         # Handle content blocks

@@ -19,38 +19,44 @@ console = Console()
 _tracer: Tracer | None = None
 
 # Per-session state tracking (supports concurrent sessions)
-# Key: session_id, Value: {"tool_output_chars": int, "validation_retries": int}
+# Key: session_id, Value: {"tool_output_chars": int}
 _session_state: dict[str, dict] = {}
-MAX_VALIDATION_RETRIES = 2
 
 
 def _find_latest_results_dir(cwd: Path | None = None) -> Path | None:
     """
-    Find the most recent results directory in runs/.
+    Find the results directory.
 
-    Looks for directories matching runs/YYYYMMDD_HHMMSS/results/ pattern,
-    sorted by directory name (which is timestamp-based).
+    Checks in order:
+    1. cwd/results/ (if cwd is a run directory)
+    2. cwd/runs/*/results/ (if cwd is project root)
+    3. ./results/ or ./runs/*/results/ (if cwd is None)
 
     Returns the path to the results/ directory, or None if not found.
     """
     base = cwd or Path.cwd()
+
+    # First check: results/ directly in cwd (when cwd is a run directory)
+    direct_results = base / "results"
+    if direct_results.exists() and direct_results.is_dir():
+        return direct_results
+
+    # Second check: runs/*/results/ pattern (when cwd is project root)
     runs_dir = base / "runs"
+    if runs_dir.exists():
+        run_dirs_with_results = []
+        for run_dir in runs_dir.iterdir():
+            if run_dir.is_dir() and (run_dir / "results").exists():
+                run_dirs_with_results.append(run_dir)
 
-    if not runs_dir.exists():
-        return None
+        if run_dirs_with_results:
+            # Sort by name (YYYYMMDD_HHMMSS format sorts chronologically)
+            latest = sorted(run_dirs_with_results, key=lambda d: d.name, reverse=True)[
+                0
+            ]
+            return latest / "results"
 
-    # Find all run directories with results/ subfolder
-    run_dirs_with_results = []
-    for run_dir in runs_dir.iterdir():
-        if run_dir.is_dir() and (run_dir / "results").exists():
-            run_dirs_with_results.append(run_dir)
-
-    if not run_dirs_with_results:
-        return None
-
-    # Sort by name (YYYYMMDD_HHMMSS format sorts chronologically)
-    latest = sorted(run_dirs_with_results, key=lambda d: d.name, reverse=True)[0]
-    return latest / "results"
+    return None
 
 
 @chz.chz
@@ -154,53 +160,16 @@ def _create_log_tool_output_hook(session_id: str, tracer: Tracer | None = None):
     return log_tool_output
 
 
-def _create_validate_on_stop_hook(session_id: str, cwd: Path | None = None):
-    """Factory: creates a Stop hook bound to a specific session."""
+def _create_stop_hook(session_id: str, cwd: Path | None = None):
+    """Factory: creates a Stop hook for logging (validation is handled in main loop)."""
 
-    async def validate_on_stop(input_data, tool_use_id, context):
-        """Stop hook: validate results and continue if validation fails (max 2 retries)."""
-        state = _session_state.get(session_id, {})
-
-        # Find the most recent results directory in runs/
-        results_dir = _find_latest_results_dir(cwd)
-        if results_dir is None:
-            # Fall back to ./results if no runs/ directory found
-            results_dir = Path("results")
-
-        console.print(f"[dim]🔍 Validating results at: {results_dir}[/dim]")
-        result = validate_results(results_dir)
-
-        if not result.valid:
-            state["validation_retries"] = state.get("validation_retries", 0) + 1
-            _session_state[session_id] = state
-            retry_count = state["validation_retries"]
-            error_summary = "; ".join(result.errors[:3])  # First 3 errors
-
-            if retry_count >= MAX_VALIDATION_RETRIES:
-                # Max retries reached, inform user and stop
-                console.print(
-                    Panel(
-                        f"[bold red]Validation failed after {MAX_VALIDATION_RETRIES} attempts.[/bold red]\n\n"
-                        f"Errors:\n" + "\n".join(f"  • {e}" for e in result.errors),
-                        title="[bold red]❌ Max Retries Reached[/bold red]",
-                        border_style="red",
-                    )
-                )
-                return {}  # Allow stop
-
-            # Retry - continue the agent using top-level fields (not hookSpecificOutput for Stop hook)
-            console.print(
-                f"[yellow]⚠️ Validation failed (attempt {retry_count}/{MAX_VALIDATION_RETRIES}), retrying...[/yellow]"
-            )
-            return {
-                "continue": True,
-                "systemMessage": f"Validation failed: {error_summary}. Please fix these issues.",
-            }
-
-        # Validation passed, allow stop
+    async def on_stop(input_data, tool_use_id, context):
+        """Stop hook: log agent stop (validation retry is handled externally)."""
+        # Note: The Stop hook cannot prevent stopping - it's for notification only.
+        # Validation-based retries are handled in run_agent() after receive_response() completes.
         return {}
 
-    return validate_on_stop
+    return on_stop
 
 
 # TODO: reuse tinker cookbook agents.md
@@ -210,7 +179,7 @@ async def run_agent(config: Config) -> None:
 
     # Create unique session ID for this run (supports concurrent sessions)
     session_id = str(uuid.uuid4())
-    _session_state[session_id] = {"tool_output_chars": 0, "validation_retries": 0}
+    _session_state[session_id] = {"tool_output_chars": 0}
 
     # Initialize tracer if path provided
     tracer = None
@@ -260,7 +229,7 @@ async def run_agent(config: Config) -> None:
             "Stop": [
                 HookMatcher(
                     hooks=[
-                        _create_validate_on_stop_hook(
+                        _create_stop_hook(
                             session_id, cwd=Path(config.cwd) if config.cwd else None
                         )
                     ]
@@ -272,38 +241,65 @@ async def run_agent(config: Config) -> None:
     result_text = None
     error_text = None
     cwd_path = Path(config.cwd) if config.cwd else None
+    MAX_VALIDATION_RETRIES = 2
+    retry_count = 0
+
     try:
         # Use ClaudeSDKClient instead of query() to support hooks
         async with ClaudeSDKClient(options=options) as client:
+            # Send initial prompt
             await client.query(config.prompt)
-            async for message in client.receive_response():
-                _print_message(message, verbose=config.verbose)
-                # Record to tracer
-                if tracer:
-                    tracer.record_message(message)
-                    # Capture final result
-                    if hasattr(message, "result") and message.result:
-                        result_text = message.result
+
+            while retry_count <= MAX_VALIDATION_RETRIES:
+                # Receive agent response
+                async for message in client.receive_response():
+                    _print_message(message, verbose=config.verbose)
+                    if tracer:
+                        tracer.record_message(message)
+                        if hasattr(message, "result") and message.result:
+                            result_text = message.result
+
+                # After agent completes, validate results
+                results_dir = _find_latest_results_dir(cwd_path)
+                if results_dir:
+                    console.print(f"[dim]🔍 Validating results at: {results_dir}[/dim]")
+                    validation = validate_results(results_dir)
+
+                    if validation.valid:
+                        console.print("[green]✅ Validation passed![/green]")
+                        break  # Success, exit retry loop
+                    else:
+                        retry_count += 1
+                        if retry_count > MAX_VALIDATION_RETRIES:
+                            console.print(
+                                Panel(
+                                    f"[bold red]Validation failed after {MAX_VALIDATION_RETRIES} retries.[/bold red]\n\n"
+                                    "Errors:\n"
+                                    + "\n".join(
+                                        f"  • {e}" for e in validation.errors[:5]
+                                    ),
+                                    title="[bold red]❌ Max Retries Reached[/bold red]",
+                                    border_style="red",
+                                )
+                            )
+                            break
+
+                        # Continue conversation with validation errors
+                        error_summary = "; ".join(validation.errors[:3])
+                        console.print(
+                            f"[yellow]⚠️ Validation failed (attempt {retry_count}/{MAX_VALIDATION_RETRIES}), continuing...[/yellow]"
+                        )
+                        # Send follow-up in same conversation (agent remembers context)
+                        await client.query(
+                            f"Validation failed: {error_summary}. Please fix these issues."
+                        )
+                else:
+                    # No results dir found, nothing to validate
+                    break
+
     except Exception as e:
         error_text = str(e)
-        # On error/crash, run validation to check if we should continue
-        # (The Stop hook only runs when Claude decides to stop, NOT on errors!)
         console.print(f"[red]Agent error: {error_text}[/red]")
-
-        # Check validation state - if task incomplete, give user option to continue
-        results_dir = _find_latest_results_dir(cwd_path)
-        if results_dir:
-            result = validate_results(results_dir)
-            if not result.valid:
-                console.print(
-                    Panel(
-                        "[bold yellow]Agent crashed but task appears incomplete.[/bold yellow]\n\n"
-                        "Validation errors:\n"
-                        + "\n".join(f"  • {e}" for e in result.errors[:5]),
-                        title="[bold yellow]⚠️ Incomplete Task[/bold yellow]",
-                        border_style="yellow",
-                    )
-                )
         raise
     finally:
         # End trace

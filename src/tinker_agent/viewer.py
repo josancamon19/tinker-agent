@@ -203,6 +203,15 @@ st.markdown(
         color: #6e7681;
         font-size: 0.8rem;
     }
+    .tool-waiting {
+        color: #d29922;
+        font-size: 0.8rem;
+        animation: pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
 
     /* Todo list styling */
     .todo-list {
@@ -316,7 +325,7 @@ def fmt_timeout(ms: int) -> str:
     return f"{ms // 1000}s"
 
 
-def render_bash_tool_call(tool_input: dict, time_str: str):
+def render_bash_tool_call(tool_input: dict, time_str: str, is_pending: bool = False):
     """Render a Bash tool call with clean, compact UI."""
     command = tool_input.get("command", "")
     description = tool_input.get("description", "")
@@ -335,12 +344,13 @@ def render_bash_tool_call(tool_input: dict, time_str: str):
     # Header with description and badges
     desc_html = f"<span class='tool-desc'>{description}</span>" if description else ""
 
+    # Show waiting indicator if pending with timeout
+    waiting_html = ""
+    if is_pending and timeout:
+        waiting_html = "<span class='tool-waiting'>⏳ running...</span>"
+
     st.markdown(
-        f"""<div class='tool-header'>
-            <span class='tool-name-badge bash'>Bash</span>
-            {desc_html}
-            <span class='tool-meta'>{badge_html} <span class='tool-time'>{time_str}</span></span>
-        </div>""",
+        f"<div class='tool-header'><span class='tool-name-badge bash'>Bash</span> {desc_html} {waiting_html}<span class='tool-meta'>{badge_html} <span class='tool-time'>{time_str}</span></span></div>",
         unsafe_allow_html=True,
     )
 
@@ -493,11 +503,12 @@ def _escape_html(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def render_event(event: dict):
+def render_event(event: dict, completed_tool_ids: set | None = None, trace_ended: bool = True):
     """Render a single event compactly."""
     etype = event.get("type", "unknown")
     ts = event.get("timestamp", 0)
     data = event.get("data", {})
+    completed_tool_ids = completed_tool_ids or set()
 
     icons = {
         "message": "💬",
@@ -524,10 +535,14 @@ def render_event(event: dict):
     elif etype == "tool_call":
         tool_name = data.get("tool_name", "unknown")
         tool_input = data.get("tool_input", {})
+        tool_id = data.get("tool_id", "")
+
+        # Check if this tool call is still pending (no result yet)
+        is_pending = tool_id not in completed_tool_ids and not trace_ended
 
         # Special rendering for specific tools
         if tool_name.lower() in {"bash", "shell", "execute", "run"}:
-            render_bash_tool_call(tool_input, time_str)
+            render_bash_tool_call(tool_input, time_str, is_pending=is_pending)
         elif tool_name.lower() in {"todowrite", "todo_write", "todo"}:
             render_todo_tool_call(tool_input, time_str)
         # Single param and short value -> inline
@@ -577,7 +592,8 @@ def render_event(event: dict):
         st.caption(f"{icon} Stop: {data.get('reason', '')}")
 
     elif etype == "result":
-        st.success(f"{icon} {data.get('content', '')[:500]}")
+        # Skip - the result content is already shown in the final assistant message
+        pass
 
 
 def render_trace(trace: dict):
@@ -610,13 +626,19 @@ def render_trace(trace: dict):
     # Prompt
     st.markdown(f"**📝 Prompt:** {prompt}")
 
+    # Build set of tool_call IDs that have received results
+    completed_tool_ids = set()
+    for event in events:
+        if event.get("type") == "tool_result":
+            tool_id = event.get("data", {}).get("tool_id")
+            if tool_id:
+                completed_tool_ids.add(tool_id)
+
     # Events
     for event in events:
-        render_event(event)
+        render_event(event, completed_tool_ids=completed_tool_ids, trace_ended=ended is not None)
 
-    # Final result/error
-    if trace.get("result"):
-        st.success(f"✅ {trace['result'][:500]}")
+    # Final error only (result is already shown as an event)
     if trace.get("error"):
         st.error(f"❌ {trace['error']}")
 

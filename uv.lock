@@ -13,6 +13,8 @@ members = [
     "20260109-204441",
     "20260109-205759",
     "20260109-210657",
+    "20260109-212310",
+    "20260109-213106",
     "tinker-agent",
 ]
 
@@ -58,6 +60,44 @@ requires-dist = [
 name = "20260109-210657"
 version = "0.1.0"
 source = { virtual = "runs/20260109_210657" }
+dependencies = [
+    { name = "python-dotenv" },
+    { name = "tinker" },
+    { name = "tinker-cookbook" },
+    { name = "wandb" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "python-dotenv" },
+    { name = "tinker" },
+    { name = "tinker-cookbook", git = "https://github.com/thinking-machines-lab/tinker-cookbook.git" },
+    { name = "wandb" },
+]
+
+[[package]]
+name = "20260109-212310"
+version = "0.1.0"
+source = { virtual = "runs/20260109_212310" }
+dependencies = [
+    { name = "python-dotenv" },
+    { name = "tinker" },
+    { name = "tinker-cookbook" },
+    { name = "wandb" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "python-dotenv" },
+    { name = "tinker" },
+    { name = "tinker-cookbook", git = "https://github.com/thinking-machines-lab/tinker-cookbook.git" },
+    { name = "wandb" },
+]
+
+[[package]]
+name = "20260109-213106"
+version = "0.1.0"
+source = { virtual = "runs/20260109_213106" }
 dependencies = [
     { name = "python-dotenv" },
     { name = "tinker" },
