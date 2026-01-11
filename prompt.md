@@ -358,22 +358,56 @@ For preference, the dataset should have:
 {"prompt": "...", "chosen": "...", "rejected": "..."}
 ```
 
-## Parallelizing Evaluation
+## Evaluation
+
+Proper evaluation is critical for measuring training effectiveness. The tinker-cookbook provides two evaluator base classes:
+
+**`TrainingClientEvaluator`** — For metrics that use the training client (e.g., NLL on held-out data)
+
+**`SamplingClientEvaluator`** — For metrics that require sampling completions (e.g., accuracy, F1, custom grading)
+
+### Key Concepts
+
+1. **Evaluators are passed as builder functions** — Use lambdas that return evaluator instances:
+   ```python
+   evaluator_builders=[lambda: NLLEvaluator.from_dataset(test_dataset)]
+   ```
+
+2. **For SFT, use NLLEvaluator** — Import from `tinker_cookbook.supervised.nll_evaluator`
+
+3. **For RL, extend SamplingClientEvaluator** — Implement async `__call__` returning `dict[str, float]`
+
+4. **Always parallelize sampling** — Use `asyncio.gather` with `asyncio.Semaphore` for speed
+
+5. **Use small eval sets for frequent checks** — When `eval_every` is small (10-20 steps), evaluate on only 50-100 samples to keep training fast. The goal is quick progress tracking, not precise measurement. Use larger eval sets (500-1000+) for final evaluation or infrequent checks.
+
+### Parallelizing Evaluation
 
 Tinker charges per token, not per GPU-hour. This means **parallelization is free**—you can fire off many concurrent requests without additional cost, only paying for the tokens processed. Prioritize speed in evaluation runs by parallelizing sampling requests.
 
-### Why Parallelize
+**Why Parallelize:**
 
 - **Cost model**: Tinker bills per million tokens, not compute time. Running 100 requests in parallel costs the same as running them sequentially.
 - **Speed**: A sequential evaluation of 1000 samples at 1s/sample = 16+ minutes. Parallelized with concurrency=50, it takes ~20 seconds.
 - **Rate limits**: Tinker handles high concurrency well. Use `asyncio.Semaphore` to cap concurrent requests if needed (e.g., 100-200 concurrent requests is typically safe).
 
-### Key Patterns
+**Key Patterns:**
 
 1. **Use `asyncio.Semaphore`** to limit concurrent requests (50-100 is a good default)
 2. **Use `asyncio.gather`** to run all tasks concurrently and collect results
 3. **Keep individual task functions simple** — one sample per coroutine
 4. **Handle errors gracefully** — wrap individual completions in try/except so one failure doesn't crash the batch
+
+### Implementation Examples
+
+See the tinker-cookbook for complete patterns:
+
+- **Base evaluator classes**: `tinker_cookbook/eval/evaluators.py`
+- **NLL evaluator**: `tinker_cookbook/supervised/nll_evaluator.py`
+- **Custom evaluators**: `tinker_cookbook/eval/custom_evaluators.py`
+- **Usage in training**: `tinker_cookbook/supervised/train.py` and `tinker_cookbook/rl/train.py`
+
+The cookbook examples show the correct builder patterns, parallel sampling, and how evaluators integrate with training configs.
 
 ---
 
