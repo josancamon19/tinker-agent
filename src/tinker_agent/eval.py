@@ -251,13 +251,13 @@ if __name__ == "__main__":
     if result.valid:
         print("✓ Validation passed")
         if result.task_type == "rl":
-            print(f"  Task type:     RL (accuracy-based)")
+            print("  Task type:     RL (accuracy-based)")
             print(f"  Base model:    {result.base_score:.2%}")
             print(f"  Trained model: {result.trained_score:.2%}")
             improvement = (result.trained_score - result.base_score) / result.base_score * 100
             print(f"  Improvement:   +{improvement:.1f}%")
         elif result.task_type == "sft":
-            print(f"  Task type:     SFT (loss-based)")
+            print("  Task type:     SFT (loss-based)")
             print(f"  Base NLL:      {result.base_nll:.4f}")
             print(f"  Trained NLL:   {result.trained_nll:.4f}")
             reduction = (result.base_nll - result.trained_nll) / result.base_nll * 100

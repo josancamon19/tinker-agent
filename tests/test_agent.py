@@ -1,14 +1,13 @@
 """Tests for the agent module."""
 
 import json
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch
 import pytest
 
 from tinker_agent.agent import (
     _create_validate_on_stop_hook,
     _create_log_tool_output_hook,
     MAX_VALIDATION_RETRIES,
-    _session_state,
 )
 from tinker_agent.eval import ValidationResult
 import tinker_agent.agent as agent_module

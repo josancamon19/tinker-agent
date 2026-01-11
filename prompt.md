@@ -260,6 +260,8 @@ When a user provides a local directory path instead of a HuggingFace dataset or 
 ```
 After conversion, proceed with standard SFT training using the generated JSONL file.
 
+Relevant: consider that for training on this type of data, the SFT purpose will be memorization (more like a continued pre-training setup), which means you might want to do 5-10 epochs on it.
+
 ### Dataset Size Limits
 
 **Hard limits to control cost and training time:**

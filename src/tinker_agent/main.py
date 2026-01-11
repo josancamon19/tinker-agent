@@ -44,7 +44,7 @@ def update_runs_index(project_root: Path) -> None:
                     traces = json.load(f)
                     if isinstance(traces, list):
                         trace_count = len(traces)
-            except:
+            except Exception:
                 pass
 
             index[run_dir.name] = {
@@ -141,9 +141,9 @@ def setup_run_directory(project_root: Path) -> Path:
 
 
 def run_training_agent(
-    dataset: str, 
-    task_type: str, 
-    model: str, 
+    dataset: str,
+    task_type: str,
+    model: str,
     project_root: Path | None = None,
     data_dir: str | None = None,
 ) -> None:
@@ -194,8 +194,8 @@ def run_training_agent(
 
     # Run agent
     config = Config(
-        prompt=prompt, 
-        cwd=str(runs_dir), 
+        prompt=prompt,
+        cwd=str(runs_dir),
         trace_path=str(trace_path),
         data_dir=data_dir,
     )
@@ -267,10 +267,10 @@ def main() -> None:
             )
             try:
                 asyncio.run(run_agent(config))
-            except Exception as e:
+            except Exception:
                 # Agent crashed - offer to continue with error context
                 console.print(
-                    f"\n[dim]Agent crashed. You can continue with a follow-up prompt.[/dim]"
+                    "\n[dim]Agent crashed. You can continue with a follow-up prompt.[/dim]"
                 )
 
             # Update index after each run
