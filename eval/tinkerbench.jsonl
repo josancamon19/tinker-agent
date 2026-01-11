@@ -1,7 +1,7 @@
 {"dataset": "allenai/Dolci-Instruct-SFT", "task": "SFT", "model": "meta-llama/Llama-3.2-1B"}
 {"dataset": "inclusionAI/Ling-Coder-SFT", "task": "SFT", "model": "meta-llama/Llama-3.2-3B"}
 {"dataset": "FreedomIntelligence/medical-o1-reasoning-SFT", "task": "SFT", "model": "meta-llama/Llama-3.2-3B"}
-{"dataset": "ServiceNow/R1-Distill-SFT", "task": "SFT", "model": "meta-llama/Llama-3.2-3B"}
+{"dataset": "ServiceNow-AI/R1-Distill-SFT", "task": "SFT", "model": "meta-llama/Llama-3.2-3B"}
 {"dataset": "open-thoughts/OpenThoughts-Agent-v1-SFT", "task": "SFT", "model": "meta-llama/Llama-3.2-3B"}
 {"dataset": "PrimeIntellect/verifiable-math-problems", "task": "RL", "model": "Qwen/Qwen3-4B-Instruct-2507"}
 {"dataset": "open-thoughts/OpenThoughts-Agent-v1-RL", "task": "RL", "model": "Qwen/Qwen3-4B-Instruct-2507"}
