@@ -101,10 +101,18 @@ def setup_project(runs_dir: Path) -> None:
     console.print("[green]✓[/green] Project setup complete")
 
 
-def setup_run_directory(project_root: Path) -> Path:
-    """Create a new run directory with uv project setup."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    runs_dir = project_root / "runs" / timestamp
+def setup_run_directory(project_root: Path, run_name: str | None = None) -> Path:
+    """Create a new run directory with uv project setup.
+
+    Args:
+        project_root: Project root directory
+        run_name: Optional custom name for the run directory.
+                  If not provided, uses timestamp (YYYYMMDD_HHMMSS).
+    """
+    if run_name is None:
+        run_name = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    runs_dir = project_root / "runs" / run_name
     runs_dir.mkdir(parents=True, exist_ok=True)
 
     # Copy .env
@@ -124,7 +132,8 @@ def run_training_agent(
     model: str,
     project_root: Path | None = None,
     data_dir: str | None = None,
-) -> None:
+    run_name: str | None = None,
+) -> str:
     """
     Run the agent with the given configuration.
 
@@ -134,13 +143,17 @@ def run_training_agent(
         model: Model name
         project_root: Project root directory (defaults to cwd)
         data_dir: Read-only data directory for local datasets (if dataset is a local path)
+        run_name: Optional custom name for the run directory
+
+    Returns:
+        The run directory path as a string
     """
     if project_root is None:
         project_root = Path.cwd()
 
     # Setup run directory
     console.print("[cyan]Setting up environment...[/cyan]")
-    runs_dir = setup_run_directory(project_root)
+    runs_dir = setup_run_directory(project_root, run_name)
 
     # Construct prompt
     if data_dir:
@@ -184,6 +197,8 @@ def run_training_agent(
     except Exception as e:
         console.print(f"\n[red]✗ Agent error: {e}[/red]")
         raise
+    finally:
+        # Update runs index
+        update_runs_index(project_root)
 
-    # Update runs index
-    update_runs_index(project_root)
+    return str(runs_dir)

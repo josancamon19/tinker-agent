@@ -284,12 +284,22 @@ def fmt_relative_time(dt: datetime) -> str:
         return f"{days}d ago"
 
 
-def parse_run_name(name: str) -> datetime | None:
-    """Parse run directory name (YYYYMMDD_HHMMSS) to datetime."""
+def parse_run_name(name: str) -> str:
+    """Parse run directory name and return a display string.
+    
+    Supports both formats:
+    - New: 01_sft_Dolci-Instruct-SFT -> "01_sft_Dolci-Instruct-SFT"
+    - Legacy: 20260111_105821 -> "5m ago"
+    """
+    # Try legacy timestamp format: YYYYMMDD_HHMMSS
     try:
-        return datetime.strptime(name, "%Y%m%d_%H%M%S")
+        dt = datetime.strptime(name, "%Y%m%d_%H%M%S")
+        return fmt_relative_time(dt)
     except ValueError:
-        return None
+        pass
+    
+    # Otherwise just use the name as-is
+    return name
 
 
 def fmt_timeout(ms: int) -> str:
@@ -838,9 +848,8 @@ def main():
                 name = run["name"]
                 is_sel = st.session_state.selected_run == name
 
-                # Parse timestamp and format as relative time
-                dt = parse_run_name(name)
-                display_name = fmt_relative_time(dt) if dt else name
+                # Parse run name to get display string
+                display_name = parse_run_name(name)
 
                 if st.button(
                     f"{'▶' if is_sel else '○'} {display_name}",

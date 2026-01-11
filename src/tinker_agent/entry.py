@@ -529,6 +529,7 @@ class TinkerConfig:
     model: str = MODEL_NAMES[0]  # Default to first model
     interactive: bool = True
     data_dir: str | None = None  # Local directory path (read-only, for local dataset)
+    run_name: str | None = None  # Custom run directory name (defaults to timestamp)
 
 
 def run_interactive() -> TinkerConfig:
@@ -615,6 +616,7 @@ def run_non_interactive(config: TinkerConfig) -> TinkerConfig:
             model=config.model,
             interactive=config.interactive,
             data_dir=str(Path(config.dataset).expanduser().resolve()),
+            run_name=config.run_name,
         )
         console.print("[dim]Note: Local directory will be mounted as read-only[/dim]")
 
@@ -681,6 +683,7 @@ def main() -> None:
                     task_type=config.task_type,
                     model=config.model,
                     data_dir=config.data_dir,
+                    run_name=config.run_name,
                 )
                 console.print(f"\n[bold]View results at:[/bold] {viewer_url}\n")
             except Exception as e:
@@ -709,6 +712,7 @@ def main() -> None:
                     task_type=config.task_type,
                     model=config.model,
                     data_dir=config.data_dir,
+                    run_name=config.run_name,
                 )
                 console.print(f"\n[bold]View results at:[/bold] {viewer_url}\n")
             except Exception as e:

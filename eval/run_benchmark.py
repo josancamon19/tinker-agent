@@ -47,6 +47,13 @@ class BenchmarkConfig:
     )  # Path to benchmark file
 
 
+def make_run_name(benchmark_idx: int, task: str, dataset: str) -> str:
+    """Generate a run directory name for a benchmark."""
+    # Extract dataset name (org/name -> name)
+    ds_name = dataset.split("/")[-1] if "/" in dataset else dataset
+    return f"{benchmark_idx + 1:02d}_{task.lower()}_{ds_name}"
+
+
 def run_single_benchmark(
     dataset: str,
     task: str,
@@ -63,12 +70,16 @@ def run_single_benchmark(
         dict with keys: success (bool), duration (float), error (str | None),
                        validation (ValidationResult | None), run_dir (str | None)
     """
+    # Generate deterministic run name
+    run_name = make_run_name(benchmark_idx, task, dataset)
+
     console.print()
     console.print(
         Panel(
             f"[bold]Dataset:[/bold] {dataset}\n"
             f"[bold]Task:[/bold] {task}\n"
             f"[bold]Model:[/bold] {model}\n"
+            f"[bold]Run:[/bold] {run_name}\n"
             f"[bold]Timeout:[/bold] {timeout_minutes} minutes",
             title=f"[bold cyan]Benchmark {benchmark_idx + 1}/{total_benchmarks}[/bold cyan]",
             border_style="cyan",
@@ -94,14 +105,11 @@ def run_single_benchmark(
         f"config.dataset={resolved_dataset}",
         f"config.task_type={task.lower()}",
         f"config.model={model}",
+        f"config.run_name={run_name}",
     ]
 
-    # Record existing run dirs before starting
-    existing_runs = (
-        set(d.name for d in runs_dir.iterdir() if d.is_dir())
-        if runs_dir.exists()
-        else set()
-    )
+    # The expected run directory
+    expected_run_dir = runs_dir / run_name
 
     start_time = time.time()
     timeout_seconds = timeout_minutes * 60
@@ -117,35 +125,21 @@ def run_single_benchmark(
 
         duration = time.time() - start_time
 
-        # Find the new run directory
-        run_dir = None
-        if runs_dir.exists():
-            new_runs = [
-                d
-                for d in runs_dir.iterdir()
-                if d.is_dir() and d.name not in existing_runs
-            ]
-            if new_runs:
-                run_dir = max(new_runs, key=lambda d: d.name)
+        # Use the expected run directory (we know the name)
+        run_dir = expected_run_dir if expected_run_dir.exists() else None
+        cli_error = None
 
         if result.returncode != 0:
-            error_msg = result.stderr or result.stdout or "Unknown error"
-            console.print(f"[red]✗ CLI failed: {error_msg[:200]}[/red]")
-            return {
-                "success": False,
-                "duration": duration,
-                "error": error_msg,
-                "validation": None,
-                "run_dir": str(run_dir) if run_dir else None,
-            }
+            cli_error = result.stderr or result.stdout or "Unknown error"
+            console.print(f"[red]✗ CLI failed: {cli_error[:200]}[/red]")
 
-        # CLI succeeded - now validate results
+        # Always try to validate if run_dir exists (agent may have succeeded before CLI crashed)
         if run_dir is None:
             console.print("[red]✗ No run directory created[/red]")
             return {
                 "success": False,
                 "duration": duration,
-                "error": "No run directory created",
+                "error": cli_error or "No run directory created",
                 "validation": None,
                 "run_dir": None,
             }
@@ -203,12 +197,47 @@ def run_single_benchmark(
     except subprocess.TimeoutExpired:
         duration = time.time() - start_time
         console.print(f"[yellow]⏱ Timeout after {timeout_minutes} minutes[/yellow]")
+
+        # Still try to validate - agent may have completed before timeout
+        run_dir = expected_run_dir if expected_run_dir.exists() else None
+        validation = None
+        if run_dir:
+            results_dir = run_dir / "results"
+            validation = validate_results(results_dir)
+            if validation.valid:
+                if validation.task_type == "sft":
+                    reduction = (
+                        (validation.base_nll - validation.trained_nll)
+                        / validation.base_nll
+                        * 100
+                    )
+                    console.print(
+                        f"[green]✓ Results valid despite timeout - NLL: {validation.base_nll:.4f} → {validation.trained_nll:.4f} (-{reduction:.1f}%)[/green]"
+                    )
+                return {
+                    "success": True,
+                    "duration": duration,
+                    "error": None,
+                    "validation": validation,
+                    "run_dir": str(run_dir),
+                }
+
         return {
             "success": False,
             "duration": duration,
             "error": f"Timeout after {timeout_minutes} minutes",
-            "validation": None,
-            "run_dir": None,
+            "validation": {
+                "valid": validation.valid,
+                "errors": validation.errors,
+                "task_type": validation.task_type,
+                "base_score": validation.base_score,
+                "trained_score": validation.trained_score,
+                "base_nll": validation.base_nll,
+                "trained_nll": validation.trained_nll,
+            }
+            if validation
+            else None,
+            "run_dir": str(run_dir) if run_dir else None,
         }
     except Exception as e:
         duration = time.time() - start_time
