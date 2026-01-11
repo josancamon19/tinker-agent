@@ -74,6 +74,7 @@ Do not consider your task complete until you have:
 5. **Recorded run metadata** — The `results/summary.json` must include:
    - `task_type` — Either `"rl"` or `"sft"`
    - `tinker_run_id` — The run ID returned by Tinker
+   - `checkpoint_path` — The latest checkpoint path for sampling (e.g., `tinker://d958d962-00a0-5ac4-8cdd-4b7c9132525b:train:0/sampler_weights/000060`)
    - `log_path` — Path where training logs were saved (e.g., `results/logs/math_rl_run_001`)
    - `wandb_url` — Link to the W&B dashboard for this run
    - For RL: `baseline_score` and `trained_score` (accuracy/success rate)
