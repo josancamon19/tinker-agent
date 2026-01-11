@@ -327,9 +327,11 @@ def interactive_get_dataset() -> tuple[str, bool]:
     Returns (dataset, is_local_directory).
     """
     console.print()
-    console.print("[dim]Enter a HuggingFace dataset (org/name) or a local directory path[/dim]")
+    console.print("[bold]Dataset:[/bold]")
+    console.print("[dim]  • HuggingFace: org/dataset-name (e.g. ServiceNow-AI/R1-Distill-SFT)[/dim]")
+    console.print("[dim]  • Local path:  ~/my-obsidian-vault or /path/to/data[/dim]")
     while True:
-        dataset = Prompt.ask("[bold]Dataset[/bold]")
+        dataset = Prompt.ask("[cyan]Enter dataset[/cyan]")
         if not dataset.strip():
             console.print("[red]Dataset cannot be empty[/red]")
             continue

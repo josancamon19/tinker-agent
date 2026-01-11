@@ -27,8 +27,8 @@ tinker-agent
 This will guide you through:
 1. **Environment setup** - Configure API keys on first run
 2. **Task selection** - Choose between SFT, RL, or CPT
-3. **Model selection** - Pick from available Claude models
-4. **Dataset configuration** - Enter a HuggingFace dataset with validation
+3. **Model selection** - Pick from available models
+4. **Dataset configuration** - Specify your training data (see below)
 
 ### Non-Interactive Mode
 
@@ -40,6 +40,21 @@ tinker-agent \
   config.task_type=sft \
   config.model=Qwen/Qwen3-8B
 ```
+
+### Dataset Options
+
+You can train on either a **HuggingFace dataset** or a **local directory**:
+
+```bash
+# HuggingFace dataset (org/dataset-name format)
+tinker-agent config.dataset=ServiceNow-AI/R1-Distill-SFT config.task_type=sft
+
+# Local directory (e.g., your Obsidian vault, markdown notes, or custom data)
+tinker-agent config.dataset=~/Documents/my-obsidian-vault config.task_type=sft
+tinker-agent config.dataset=/path/to/training-data config.task_type=sft
+```
+
+Local directories are mounted as **read-only** - the agent can read your data but won't modify it. Supported file formats include `.json`, `.jsonl`, `.parquet`, `.csv`, `.txt`, and `.md`.
 
 ## Configuration
 
@@ -149,8 +164,8 @@ tinker-agent config.dataset=my-dataset config.task_type=rl
 
 - ✅ **Interactive CLI** - Beautiful rich terminal UI for configuration
 - ✅ **Non-interactive mode** - Scriptable with command-line arguments
-- ✅ **Dataset validation** - Verifies HuggingFace datasets exist before use
-- ✅ **Model selection** - Choose from available Claude models
+- ✅ **Flexible datasets** - Use HuggingFace datasets or local directories (Obsidian vaults, markdown notes, etc.)
+- ✅ **Model selection** - Choose from available models
 - ✅ **Environment management** - Simple .env-based configuration
 - ✅ **Sandboxed execution** - Agent runs in isolated directory with path validation
 - ✅ **Trace viewer** - Streamlit-based viewer for execution traces
