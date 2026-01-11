@@ -16,9 +16,6 @@ from tinker_agent.agent import run_agent, Config
 
 console = Console()
 
-# Trace file location
-TRACES_FILE = "traces.json"
-
 
 def update_runs_index(project_root: Path) -> None:
     """Update runs/index.json with all runs that have traces."""
@@ -153,7 +150,7 @@ def run_training_agent(
         prompt = f"Do {task_type.upper()} training on {model} using dataset {dataset}"
 
     # Trace file path
-    trace_path = runs_dir / TRACES_FILE
+    trace_path = runs_dir / "traces.json"
 
     # Build dataset info for display
     dataset_display = dataset
