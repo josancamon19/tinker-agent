@@ -22,6 +22,18 @@ console = Console()
 PARALLEL_STAGGER_DELAY = 5
 
 
+def resolve_dataset(dataset: str) -> str:
+    """
+    Resolve a dataset reference to a usable path.
+    If it's a relative path that exists, resolve to absolute path.
+    Otherwise, return the dataset as-is (HuggingFace name).
+    """
+    path = Path(dataset)
+    if path.exists():
+        return str(path.resolve())
+    return dataset
+
+
 @chz.chz
 class BenchmarkConfig:
     """Benchmark runner configuration."""
@@ -63,10 +75,23 @@ def run_single_benchmark(
         )
     )
 
+    # Resolve dataset (clone if GitHub URL)
+    try:
+        resolved_dataset = resolve_dataset(dataset)
+    except Exception as e:
+        console.print(f"[red]✗ Failed to resolve dataset: {e}[/red]")
+        return {
+            "success": False,
+            "duration": 0.0,
+            "error": f"Failed to resolve dataset: {e}",
+            "validation": None,
+            "run_dir": None,
+        }
+
     # Build command (chz requires config. prefix for nested config)
     cmd = [
         "tinker-agent",
-        f"config.dataset={dataset}",
+        f"config.dataset={resolved_dataset}",
         f"config.task_type={task.lower()}",
         f"config.model={model}",
     ]
