@@ -218,6 +218,7 @@ def validate_results(results_dir: str | Path = "results") -> ValidationResult:
             required_keys = {
                 "task_type",
                 "tinker_run_id",
+                "checkpoint_path",
                 "log_path",
                 "wandb_url",
             }
