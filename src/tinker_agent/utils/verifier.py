@@ -107,7 +107,9 @@ def validate_jsonl_file(
                     elif detected_type == "sft":
                         errors.extend(validate_jsonl_row_sft(row, i))
                     else:
-                        errors.append(f"Row {i}: cannot determine task type from schema")
+                        errors.append(
+                            f"Row {i}: cannot determine task type from schema"
+                        )
 
                 except json.JSONDecodeError as e:
                     errors.append(f"Row {i}: invalid JSON - {e}")
@@ -244,25 +246,3 @@ def validate_results(results_dir: str | Path = "results") -> ValidationResult:
         base_nll=base_nll,
         trained_nll=trained_nll,
     )
-
-
-if __name__ == "__main__":
-    result = validate_results()
-    if result.valid:
-        print("✓ Validation passed")
-        if result.task_type == "rl":
-            print("  Task type:     RL (accuracy-based)")
-            print(f"  Base model:    {result.base_score:.2%}")
-            print(f"  Trained model: {result.trained_score:.2%}")
-            improvement = (result.trained_score - result.base_score) / result.base_score * 100
-            print(f"  Improvement:   +{improvement:.1f}%")
-        elif result.task_type == "sft":
-            print("  Task type:     SFT (loss-based)")
-            print(f"  Base NLL:      {result.base_nll:.4f}")
-            print(f"  Trained NLL:   {result.trained_nll:.4f}")
-            reduction = (result.base_nll - result.trained_nll) / result.base_nll * 100
-            print(f"  NLL reduction: {reduction:.1f}%")
-    else:
-        print("✗ Validation failed:")
-        for error in result.errors:
-            print(f"  - {error}")

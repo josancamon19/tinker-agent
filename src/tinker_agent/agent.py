@@ -11,7 +11,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 
-from tinker_agent.eval import validate_results
+from tinker_agent.utils.verifier import validate_results
 from tinker_agent.utils.tracer import Tracer
 
 console = Console()

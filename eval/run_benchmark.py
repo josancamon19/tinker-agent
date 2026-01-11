@@ -14,7 +14,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from tinker_agent.eval import validate_results
+from tinker_agent.utils.verifier import validate_results
 
 console = Console()
 

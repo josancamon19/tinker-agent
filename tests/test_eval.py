@@ -4,7 +4,7 @@ import json
 import pytest
 from pathlib import Path
 
-from tinker_agent.eval import (
+from tinker_agent.utils.verifier import (
     validate_jsonl_row_rl,
     validate_jsonl_row_sft,
     validate_jsonl_file,

@@ -313,7 +313,10 @@ def extract_log_file_from_command(command: str) -> str | None:
 
 
 def render_bash_tool_call(
-    tool_input: dict, time_str: str, is_pending: bool = False, log_file: str | None = None
+    tool_input: dict,
+    time_str: str,
+    is_pending: bool = False,
+    log_file: str | None = None,
 ):
     """Render a Bash tool call with clean, compact UI."""
     command = tool_input.get("command", "")
@@ -339,7 +342,9 @@ def render_bash_tool_call(
     # Show waiting indicator if pending
     waiting_html = ""
     if is_pending and timeout:
-        waiting_html = "<span style='color: #d29922; margin-left: 8px;'>⏳ running...</span>"
+        waiting_html = (
+            "<span style='color: #d29922; margin-left: 8px;'>⏳ running...</span>"
+        )
 
     st.markdown(
         f"<div class='tool-header'><span class='tool-name-badge bash'>Bash</span> {desc_html} {waiting_html}<span class='tool-meta'>{badge_html} <span class='tool-time'>{time_str}</span></span></div>",
@@ -366,7 +371,9 @@ def render_bash_tool_call(
                     max_lines = 50
                     if len(lines) > max_lines:
                         display_lines = lines[-max_lines:]
-                        truncated_msg = f"... [{len(lines) - max_lines} earlier lines]\n"
+                        truncated_msg = (
+                            f"... [{len(lines) - max_lines} earlier lines]\n"
+                        )
                     else:
                         display_lines = lines
                         truncated_msg = ""
@@ -452,7 +459,11 @@ def _escape_html(text: str) -> str:
 
 
 def render_tool_result(
-    result: str, tool_name: str, is_error: bool, time_str: str, log_file: str | None = None
+    result: str,
+    tool_name: str,
+    is_error: bool,
+    time_str: str,
+    log_file: str | None = None,
 ):
     """Render tool result in a clean, CLI-like format."""
     parsed = parse_tool_result(result)

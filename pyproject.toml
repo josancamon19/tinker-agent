@@ -32,9 +32,9 @@ dependencies = [
 dev = ["pytest>=9.0.2", "build>=1.0.0", "twine>=4.0.0"]
 
 [project.scripts]
-tinker-agent = "tinker_agent.cli:main"
-tinker-agent-setup = "tinker_agent.cli:setup"
-tinker-agent-viewer = "tinker_agent.cli:viewer"
+tinker-agent = "tinker_agent.ui.cli:main"
+tinker-agent-setup = "tinker_agent.ui.cli:setup"
+tinker-agent-viewer = "tinker_agent.ui.cli:viewer"
 
 [build-system]
 requires = ["hatchling"]

@@ -1,20 +1,14 @@
 import asyncio
-import http.server
 import json
 import os
 import shutil
 import subprocess
 import sys
-import threading
-import webbrowser
 from datetime import datetime
-from functools import partial
 from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import Prompt
-from rich.text import Text
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -54,19 +48,6 @@ def update_runs_index(project_root: Path) -> None:
 
     with open(index_path, "w") as f:
         json.dump(index, f, indent=2)
-
-
-def start_trace_server(project_root: Path, port: int = 8765) -> int:
-    """Start a simple HTTP server at project root to serve the viewer."""
-    handler = partial(http.server.SimpleHTTPRequestHandler, directory=str(project_root))
-
-    def serve():
-        with http.server.HTTPServer(("", port), handler) as httpd:
-            httpd.serve_forever()
-
-    thread = threading.Thread(target=serve, daemon=True)
-    thread.start()
-    return port
 
 
 PYPROJECT_DEPENDENCIES = """dependencies = [

@@ -23,13 +23,19 @@ def show_welcome_animation():
     message = Text()
     message.append("Welcome to ", style="bold cyan")
     message.append("tinker-agent", style="bold yellow")
-    message.append("\nPost training agent for @thinkymachines Tinker platform", style="dim")
+    message.append(
+        "\nPost training agent for @thinkymachines Tinker platform", style="dim"
+    )
 
     # Warning message
     warning = Text()
     warning.append("\n\n⚠️  Preview Release\n", style="bold yellow")
-    warning.append("• Claude is sandboxed to prevent access outside its directory\n", style="dim")
-    warning.append("• Some bypass permissions exist for system operations\n", style="dim")
+    warning.append(
+        "• Claude is sandboxed to prevent access outside its directory\n", style="dim"
+    )
+    warning.append(
+        "• Some bypass permissions exist for system operations\n", style="dim"
+    )
     warning.append("• Use with caution in production environments", style="dim")
 
     # Combine everything
@@ -194,31 +200,56 @@ def validate_dataset(dataset: str) -> tuple[bool, str, bool]:
         files = list(dataset_path.iterdir())
         if not files:
             return False, f"Local directory '{dataset}' is empty", True
-        
+
         # Check for common data file formats
-        data_files = [f for f in files if f.suffix in {'.json', '.jsonl', '.parquet', '.csv', '.txt', '.arrow'}]
+        data_files = [
+            f
+            for f in files
+            if f.suffix in {".json", ".jsonl", ".parquet", ".csv", ".txt", ".arrow"}
+        ]
         if data_files:
-            return True, f"Local directory '{dataset}' found with {len(data_files)} data file(s)", True
-        
+            return (
+                True,
+                f"Local directory '{dataset}' found with {len(data_files)} data file(s)",
+                True,
+            )
+
         # Check subdirectories for data files
-        all_files = list(dataset_path.rglob('*'))
-        data_files = [f for f in all_files if f.is_file() and f.suffix in {'.json', '.jsonl', '.parquet', '.csv', '.txt', '.arrow'}]
+        all_files = list(dataset_path.rglob("*"))
+        data_files = [
+            f
+            for f in all_files
+            if f.is_file()
+            and f.suffix in {".json", ".jsonl", ".parquet", ".csv", ".txt", ".arrow"}
+        ]
         if data_files:
-            return True, f"Local directory '{dataset}' found with {len(data_files)} data file(s)", True
-        
-        return True, f"Local directory '{dataset}' found (no standard data files detected, but accessible)", True
-    
+            return (
+                True,
+                f"Local directory '{dataset}' found with {len(data_files)} data file(s)",
+                True,
+            )
+
+        return (
+            True,
+            f"Local directory '{dataset}' found (no standard data files detected, but accessible)",
+            True,
+        )
+
     # Check format for HuggingFace: must be "organization/dataset-name" or "organization/dataset-name:config"
     if "/" not in dataset:
-        return False, (
-            f"Invalid dataset: '{dataset}'\n"
-            "Dataset must be either:\n"
-            "  - A HuggingFace dataset: 'organization/dataset-name'\n"
-            "  - A local directory path: '/path/to/data' or './data'\n"
-            "Examples:\n"
-            "  - 'ServiceNow-AI/R1-Distill-SFT' (HuggingFace)\n"
-            "  - '/home/user/my-sft-data' (local directory)"
-        ), False
+        return (
+            False,
+            (
+                f"Invalid dataset: '{dataset}'\n"
+                "Dataset must be either:\n"
+                "  - A HuggingFace dataset: 'organization/dataset-name'\n"
+                "  - A local directory path: '/path/to/data' or './data'\n"
+                "Examples:\n"
+                "  - 'ServiceNow-AI/R1-Distill-SFT' (HuggingFace)\n"
+                "  - '/home/user/my-sft-data' (local directory)"
+            ),
+            False,
+        )
 
     try:
         from huggingface_hub import HfApi
@@ -240,13 +271,17 @@ def validate_dataset(dataset: str) -> tuple[bool, str, bool]:
 
     except ImportError:
         # If huggingface_hub not installed, skip validation
-        return True, "HuggingFace validation skipped (huggingface_hub not installed)", False
+        return (
+            True,
+            "HuggingFace validation skipped (huggingface_hub not installed)",
+            False,
+        )
 
 
 def validate_hf_dataset(dataset: str) -> tuple[bool, str]:
     """
     Validate that a HuggingFace dataset exists.
-    
+
     Backwards-compatible wrapper around validate_dataset.
     Returns (is_valid, message).
     """
@@ -323,12 +358,14 @@ def interactive_select_model() -> str:
 
 def interactive_get_dataset() -> tuple[str, bool]:
     """Interactively get and validate dataset.
-    
+
     Returns (dataset, is_local_directory).
     """
     console.print()
     console.print("[bold]Dataset:[/bold]")
-    console.print("[dim]  • HuggingFace: org/dataset-name (e.g. ServiceNow-AI/R1-Distill-SFT)[/dim]")
+    console.print(
+        "[dim]  • HuggingFace: org/dataset-name (e.g. ServiceNow-AI/R1-Distill-SFT)[/dim]"
+    )
     console.print("[dim]  • Local path:  ~/my-obsidian-vault or /path/to/data[/dim]")
     while True:
         dataset = Prompt.ask("[cyan]Enter dataset[/cyan]")
@@ -342,7 +379,9 @@ def interactive_get_dataset() -> tuple[str, bool]:
         if valid:
             console.print(f"[green]{message}[/green]")
             if is_local:
-                console.print("[dim]Note: Local directory will be mounted as read-only[/dim]")
+                console.print(
+                    "[dim]Note: Local directory will be mounted as read-only[/dim]"
+                )
             return dataset, is_local
         else:
             console.print(f"[red]{message}[/red]")
@@ -525,7 +564,7 @@ def run_interactive() -> TinkerConfig:
     dataset_info = f"[bold]Dataset:[/bold] {dataset}"
     if is_local:
         dataset_info += " [dim](local, read-only)[/dim]"
-    
+
     console.print()
     console.print(
         Panel(
@@ -566,7 +605,7 @@ def run_non_interactive(config: TinkerConfig) -> TinkerConfig:
         raise ValueError(message)
 
     console.print(f"[green]{message}[/green]")
-    
+
     # If local directory and data_dir not already set, set it
     if is_local and not config.data_dir:
         # Create new config with data_dir set
@@ -578,7 +617,7 @@ def run_non_interactive(config: TinkerConfig) -> TinkerConfig:
             data_dir=str(Path(config.dataset).expanduser().resolve()),
         )
         console.print("[dim]Note: Local directory will be mounted as read-only[/dim]")
-    
+
     return config
 
 
@@ -634,7 +673,7 @@ def main() -> None:
             viewer_url = launch_viewer()
 
             # Import and run agent
-            from tinker_agent.main import run_training_agent
+            from tinker_agent.sandbox import run_training_agent
 
             try:
                 run_training_agent(
@@ -662,7 +701,7 @@ def main() -> None:
             viewer_url = launch_viewer()
 
             # Import and run agent
-            from tinker_agent.main import run_training_agent
+            from tinker_agent.sandbox import run_training_agent
 
             try:
                 run_training_agent(
