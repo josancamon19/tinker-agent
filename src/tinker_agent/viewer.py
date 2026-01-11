@@ -543,10 +543,14 @@ def render_event(
         log_file = None
         if tool_name.lower() in {"bash", "shell", "execute", "run"}:
             command = tool_input.get("command", "")
-            # Extract original command if wrapped with tee
+            # The command in tool_input includes venv + tee wrapper: "(cmd) 2>&1 | stdbuf -oL tee /path/to/log"
+            # The key in stream_log_files is after venv but before tee: just "cmd"
+            # We need to unwrap the tee to match
             original_cmd = command
-            if "| stdbuf -oL tee" in command and ") 2>&1 |" in command:
-                original_cmd = command.split(") 2>&1 |")[0]
+            if ") 2>&1 | stdbuf -oL tee " in command:
+                # Extract everything before the tee
+                original_cmd = command.split(") 2>&1 | stdbuf -oL tee ")[0]
+                # Remove leading "(" if present
                 if original_cmd.startswith("("):
                     original_cmd = original_cmd[1:]
             log_file = stream_log_files.get(original_cmd)
