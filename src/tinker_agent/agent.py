@@ -12,7 +12,7 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from tinker_agent.eval import validate_results
-from tinker_agent.tracer import Tracer
+from tinker_agent.utils.tracer import Tracer
 
 console = Console()
 
