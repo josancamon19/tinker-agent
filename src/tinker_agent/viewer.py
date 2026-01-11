@@ -300,6 +300,18 @@ def fmt_timeout(ms: int) -> str:
     return f"{ms // 1000}s"
 
 
+def extract_log_file_from_command(command: str) -> str | None:
+    """Extract log file path directly from a tee-wrapped command."""
+    # Pattern: (cmd) 2>&1 | stdbuf -oL tee /path/to/log
+    if "| stdbuf -oL tee " in command:
+        parts = command.split("| stdbuf -oL tee ")
+        if len(parts) >= 2:
+            # The log path is after "tee ", may have trailing content
+            log_path = parts[-1].strip().split()[0] if parts[-1].strip() else None
+            return log_path
+    return None
+
+
 def render_bash_tool_call(
     tool_input: dict, time_str: str, is_pending: bool = False, log_file: str | None = None
 ):
@@ -308,6 +320,10 @@ def render_bash_tool_call(
     description = tool_input.get("description", "")
     timeout = tool_input.get("timeout")
     run_in_bg = tool_input.get("run_in_background", False)
+
+    # Try to extract log file path directly from command if not provided
+    if not log_file:
+        log_file = extract_log_file_from_command(command)
 
     badges = []
     if timeout:
@@ -338,7 +354,7 @@ def render_bash_tool_call(
             display_command = display_command[1:]
     st.code(display_command, language="bash")
 
-    # Show live streaming output if pending and log file exists
+    # Show streaming output if pending and log file exists
     if is_pending and log_file:
         log_path = Path(log_file)
         if log_path.exists():
@@ -435,7 +451,9 @@ def _escape_html(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def render_tool_result(result: str, tool_name: str, is_error: bool, time_str: str):
+def render_tool_result(
+    result: str, tool_name: str, is_error: bool, time_str: str, log_file: str | None = None
+):
     """Render tool result in a clean, CLI-like format."""
     parsed = parse_tool_result(result)
     result_type = parsed.get("type", "text")
@@ -443,6 +461,38 @@ def render_tool_result(result: str, tool_name: str, is_error: bool, time_str: st
     if result_type == "shell":
         stdout = parsed.get("stdout", "")
         stderr = parsed.get("stderr", "")
+
+        # For large outputs, prefer showing log file if available
+        if log_file and (len(stdout) > 5000 or not stdout):
+            log_path = Path(log_file)
+            if log_path.exists():
+                try:
+                    log_content = log_path.read_text()
+                    if log_content:
+                        lines = log_content.splitlines()
+                        total_lines = len(lines)
+                        # Show last 100 lines for completed commands
+                        max_lines = 100
+                        if total_lines > max_lines:
+                            display_lines = lines[-max_lines:]
+                            truncated_msg = f"... [{total_lines - max_lines} earlier lines - view full log: {log_file}]\n"
+                        else:
+                            display_lines = lines
+                            truncated_msg = ""
+
+                        st.markdown(
+                            f"<div class='cli-output'><pre>{truncated_msg}{_escape_html(chr(10).join(display_lines))}</pre></div>",
+                            unsafe_allow_html=True,
+                        )
+                        # Show stderr separately if present
+                        if stderr:
+                            st.markdown(
+                                f"<div class='cli-output stderr'><pre>{_escape_html(stderr[:2000])}</pre></div>",
+                                unsafe_allow_html=True,
+                            )
+                        return  # Skip default stdout handling
+                except Exception:
+                    pass  # Fall back to stdout handling
 
         if stdout:
             st.markdown(
@@ -501,6 +551,7 @@ def render_event(
     completed_tool_ids: set | None = None,
     trace_ended: bool = True,
     stream_log_files: dict | None = None,
+    tool_id_to_log_file: dict | None = None,
 ):
     """Render a single event compactly."""
     etype = event.get("type", "unknown")
@@ -508,6 +559,7 @@ def render_event(
     data = event.get("data", {})
     completed_tool_ids = completed_tool_ids or set()
     stream_log_files = stream_log_files or {}
+    tool_id_to_log_file = tool_id_to_log_file or {}
 
     icons = {
         "message": "💬",
@@ -539,21 +591,21 @@ def render_event(
         # Check if this tool call is still pending (no result yet)
         is_pending = tool_id not in completed_tool_ids and not trace_ended
 
-        # Get streaming log file if available
+        # Get streaming log file - first try direct extraction from command, then fall back to stream_log_files
         log_file = None
         if tool_name.lower() in {"bash", "shell", "execute", "run"}:
             command = tool_input.get("command", "")
-            # The command in tool_input includes venv + tee wrapper: "(cmd) 2>&1 | stdbuf -oL tee /path/to/log"
-            # The key in stream_log_files is after venv but before tee: just "cmd"
-            # We need to unwrap the tee to match
-            original_cmd = command
-            if ") 2>&1 | stdbuf -oL tee " in command:
-                # Extract everything before the tee
-                original_cmd = command.split(") 2>&1 | stdbuf -oL tee ")[0]
-                # Remove leading "(" if present
-                if original_cmd.startswith("("):
-                    original_cmd = original_cmd[1:]
-            log_file = stream_log_files.get(original_cmd)
+            # Try to extract log file path directly from tee-wrapped command
+            log_file = extract_log_file_from_command(command)
+
+            # Fall back to stream_log_files mapping if direct extraction failed
+            if not log_file:
+                original_cmd = command
+                if ") 2>&1 | stdbuf -oL tee " in command:
+                    original_cmd = command.split(") 2>&1 | stdbuf -oL tee ")[0]
+                    if original_cmd.startswith("("):
+                        original_cmd = original_cmd[1:]
+                log_file = stream_log_files.get(original_cmd)
 
         if tool_name.lower() in {"bash", "shell", "execute", "run"}:
             render_bash_tool_call(
@@ -591,8 +643,12 @@ def render_event(
         result = data.get("result", "")
         is_error = data.get("is_error", False)
         tool_name = data.get("tool_name", "")
+        tool_id = data.get("tool_id", "")
 
-        render_tool_result(result, tool_name, is_error, time_str)
+        # Get log file for this tool result
+        log_file = tool_id_to_log_file.get(tool_id)
+
+        render_tool_result(result, tool_name, is_error, time_str, log_file=log_file)
 
     elif etype == "thinking":
         content = data.get("content", "")
@@ -654,6 +710,22 @@ def render_trace(trace: dict):
             if original_command and log_file:
                 stream_log_files[original_command] = log_file
 
+    # Build mapping of tool_id -> log_file for tool_result rendering
+    tool_id_to_log_file = {}
+    for event in events:
+        if event.get("type") == "tool_call":
+            data = event.get("data", {})
+            tool_name = data.get("tool_name", "")
+            tool_id = data.get("tool_id", "")
+            tool_input = data.get("tool_input", {})
+
+            if tool_name.lower() in {"bash", "shell", "execute", "run"} and tool_id:
+                command = tool_input.get("command", "")
+                # Extract log file directly from command
+                log_file = extract_log_file_from_command(command)
+                if log_file:
+                    tool_id_to_log_file[tool_id] = log_file
+
     # Events
     for event in events:
         render_event(
@@ -661,6 +733,7 @@ def render_trace(trace: dict):
             completed_tool_ids=completed_tool_ids,
             trace_ended=ended is not None,
             stream_log_files=stream_log_files,
+            tool_id_to_log_file=tool_id_to_log_file,
         )
 
     if trace.get("error"):

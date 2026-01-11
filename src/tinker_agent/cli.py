@@ -182,19 +182,44 @@ AVAILABLE_MODELS = [
 MODEL_NAMES = [m["name"] for m in AVAILABLE_MODELS]
 
 
-def validate_hf_dataset(dataset: str) -> tuple[bool, str]:
+def validate_dataset(dataset: str) -> tuple[bool, str, bool]:
     """
-    Validate that a HuggingFace dataset exists.
+    Validate that a dataset exists (either HuggingFace or local directory).
 
-    Returns (is_valid, message).
+    Returns (is_valid, message, is_local_directory).
     """
-    # Check format: must be "organization/dataset-name" or "organization/dataset-name:config"
+    # Check if it's a local directory path
+    dataset_path = Path(dataset).expanduser()
+    if dataset_path.exists() and dataset_path.is_dir():
+        # Verify it has some files (not empty)
+        files = list(dataset_path.iterdir())
+        if not files:
+            return False, f"Local directory '{dataset}' is empty", True
+        
+        # Check for common data file formats
+        data_files = [f for f in files if f.suffix in {'.json', '.jsonl', '.parquet', '.csv', '.txt', '.arrow'}]
+        if data_files:
+            return True, f"Local directory '{dataset}' found with {len(data_files)} data file(s)", True
+        
+        # Check subdirectories for data files
+        all_files = list(dataset_path.rglob('*'))
+        data_files = [f for f in all_files if f.is_file() and f.suffix in {'.json', '.jsonl', '.parquet', '.csv', '.txt', '.arrow'}]
+        if data_files:
+            return True, f"Local directory '{dataset}' found with {len(data_files)} data file(s)", True
+        
+        return True, f"Local directory '{dataset}' found (no standard data files detected, but accessible)", True
+    
+    # Check format for HuggingFace: must be "organization/dataset-name" or "organization/dataset-name:config"
     if "/" not in dataset:
         return False, (
-            f"Invalid dataset format: '{dataset}'\n"
-            "Dataset must be in format: 'organization/dataset-name'\n"
-            "Example: 'ServiceNow-AI/R1-Distill-SFT' or 'HuggingFaceFW/fineweb'"
-        )
+            f"Invalid dataset: '{dataset}'\n"
+            "Dataset must be either:\n"
+            "  - A HuggingFace dataset: 'organization/dataset-name'\n"
+            "  - A local directory path: '/path/to/data' or './data'\n"
+            "Examples:\n"
+            "  - 'ServiceNow-AI/R1-Distill-SFT' (HuggingFace)\n"
+            "  - '/home/user/my-sft-data' (local directory)"
+        ), False
 
     try:
         from huggingface_hub import HfApi
@@ -210,13 +235,24 @@ def validate_hf_dataset(dataset: str) -> tuple[bool, str]:
         # Check if dataset exists
         try:
             api.dataset_info(dataset_name)
-            return True, f"Dataset '{dataset}' found on HuggingFace"
+            return True, f"Dataset '{dataset}' found on HuggingFace", False
         except Exception:
-            return False, f"Dataset '{dataset}' not found on HuggingFace"
+            return False, f"Dataset '{dataset}' not found on HuggingFace", False
 
     except ImportError:
         # If huggingface_hub not installed, skip validation
-        return True, "HuggingFace validation skipped (huggingface_hub not installed)"
+        return True, "HuggingFace validation skipped (huggingface_hub not installed)", False
+
+
+def validate_hf_dataset(dataset: str) -> tuple[bool, str]:
+    """
+    Validate that a HuggingFace dataset exists.
+    
+    Backwards-compatible wrapper around validate_dataset.
+    Returns (is_valid, message).
+    """
+    is_valid, message, _ = validate_dataset(dataset)
+    return is_valid, message
 
 
 def interactive_select_task_type() -> TaskType:
@@ -286,21 +322,27 @@ def interactive_select_model() -> str:
             )
 
 
-def interactive_get_dataset() -> str:
-    """Interactively get and validate dataset."""
+def interactive_get_dataset() -> tuple[str, bool]:
+    """Interactively get and validate dataset.
+    
+    Returns (dataset, is_local_directory).
+    """
     console.print()
+    console.print("[dim]Enter a HuggingFace dataset (org/name) or a local directory path[/dim]")
     while True:
-        dataset = Prompt.ask("[bold]HuggingFace dataset[/bold]")
+        dataset = Prompt.ask("[bold]Dataset[/bold]")
         if not dataset.strip():
             console.print("[red]Dataset cannot be empty[/red]")
             continue
 
         with console.status("[dim]Validating dataset...[/dim]"):
-            valid, message = validate_hf_dataset(dataset)
+            valid, message, is_local = validate_dataset(dataset)
 
         if valid:
             console.print(f"[green]{message}[/green]")
-            return dataset
+            if is_local:
+                console.print("[dim]Note: Local directory will be mounted as read-only[/dim]")
+            return dataset, is_local
         else:
             console.print(f"[red]{message}[/red]")
             if not Confirm.ask("Try another dataset?", default=True):
@@ -446,6 +488,7 @@ class TinkerConfig:
     task_type: str  # Will be validated and converted to TaskType
     model: str = MODEL_NAMES[0]  # Default to first model
     interactive: bool = True
+    data_dir: str | None = None  # Local directory path (read-only, for local dataset)
 
 
 def run_interactive() -> TinkerConfig:
@@ -462,22 +505,32 @@ def run_interactive() -> TinkerConfig:
     # Gather config interactively
     task_type = interactive_select_task_type()
     model = interactive_select_model()
-    dataset = interactive_get_dataset()
+    dataset, is_local = interactive_get_dataset()
+
+    # If local directory, resolve to absolute path for data_dir
+    data_dir = None
+    if is_local:
+        data_dir = str(Path(dataset).expanduser().resolve())
 
     config = TinkerConfig(
         dataset=dataset,
         task_type=task_type.value,  # Convert enum to string
         model=model,
         interactive=True,
+        data_dir=data_dir,
     )
 
     # Show summary
+    dataset_info = f"[bold]Dataset:[/bold] {dataset}"
+    if is_local:
+        dataset_info += " [dim](local, read-only)[/dim]"
+    
     console.print()
     console.print(
         Panel(
             f"[bold]Task Type:[/bold] {task_type}\n"
             f"[bold]Model:[/bold] {model}\n"
-            f"[bold]Dataset:[/bold] {dataset}",
+            f"{dataset_info}",
             title="[bold green]Configuration Summary[/bold green]",
             border_style="green",
         )
@@ -506,12 +559,25 @@ def run_non_interactive(config: TinkerConfig) -> TinkerConfig:
             f"Invalid model '{config.model}'. Must be one of: {', '.join(MODEL_NAMES)}"
         )
 
-    # Validate dataset
-    valid, message = validate_hf_dataset(config.dataset)
+    # Validate dataset (supports both HuggingFace and local directories)
+    valid, message, is_local = validate_dataset(config.dataset)
     if not valid:
         raise ValueError(message)
 
     console.print(f"[green]{message}[/green]")
+    
+    # If local directory and data_dir not already set, set it
+    if is_local and not config.data_dir:
+        # Create new config with data_dir set
+        config = TinkerConfig(
+            dataset=config.dataset,
+            task_type=config.task_type,
+            model=config.model,
+            interactive=config.interactive,
+            data_dir=str(Path(config.dataset).expanduser().resolve()),
+        )
+        console.print("[dim]Note: Local directory will be mounted as read-only[/dim]")
+    
     return config
 
 
@@ -574,6 +640,7 @@ def main() -> None:
                     dataset=config.dataset,
                     task_type=config.task_type,
                     model=config.model,
+                    data_dir=config.data_dir,
                 )
                 console.print(f"\n[bold]View results at:[/bold] {viewer_url}\n")
             except Exception as e:
@@ -601,6 +668,7 @@ def main() -> None:
                     dataset=config.dataset,
                     task_type=config.task_type,
                     model=config.model,
+                    data_dir=config.data_dir,
                 )
                 console.print(f"\n[bold]View results at:[/bold] {viewer_url}\n")
             except Exception as e:

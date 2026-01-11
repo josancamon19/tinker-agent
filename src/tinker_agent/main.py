@@ -141,16 +141,21 @@ def setup_run_directory(project_root: Path) -> Path:
 
 
 def run_training_agent(
-    dataset: str, task_type: str, model: str, project_root: Path | None = None
+    dataset: str, 
+    task_type: str, 
+    model: str, 
+    project_root: Path | None = None,
+    data_dir: str | None = None,
 ) -> None:
     """
     Run the agent with the given configuration.
 
     Args:
-        dataset: HuggingFace dataset name (e.g., "HuggingFaceFW/fineweb")
+        dataset: HuggingFace dataset name (e.g., "HuggingFaceFW/fineweb") or local path
         task_type: Task type ("sft", "rl", or "cpt")
         model: Model name
         project_root: Project root directory (defaults to cwd)
+        data_dir: Read-only data directory for local datasets (if dataset is a local path)
     """
     if project_root is None:
         project_root = Path.cwd()
@@ -160,15 +165,24 @@ def run_training_agent(
     runs_dir = setup_run_directory(project_root)
 
     # Construct prompt
-    prompt = f"Do {task_type.upper()} training on {model} using dataset {dataset}"
+    if data_dir:
+        # For local directories, tell the agent where to find the data
+        prompt = f"Do {task_type.upper()} training on {model} using the local dataset at {data_dir}"
+    else:
+        prompt = f"Do {task_type.upper()} training on {model} using dataset {dataset}"
 
     # Trace file path
     trace_path = runs_dir / TRACES_FILE
 
+    # Build dataset info for display
+    dataset_display = dataset
+    if data_dir:
+        dataset_display += " [dim](local, read-only)[/dim]"
+
     console.print()
     console.print(
         Panel(
-            f"[bold]Dataset:[/bold] {dataset}\n"
+            f"[bold]Dataset:[/bold] {dataset_display}\n"
             f"[bold]Task Type:[/bold] {task_type}\n"
             f"[bold]Model:[/bold] {model}\n"
             f"[bold]Run Directory:[/bold] {runs_dir}",
@@ -179,7 +193,12 @@ def run_training_agent(
     console.print()
 
     # Run agent
-    config = Config(prompt=prompt, cwd=str(runs_dir), trace_path=str(trace_path))
+    config = Config(
+        prompt=prompt, 
+        cwd=str(runs_dir), 
+        trace_path=str(trace_path),
+        data_dir=data_dir,
+    )
 
     try:
         asyncio.run(run_agent(config))

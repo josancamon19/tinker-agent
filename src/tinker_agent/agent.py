@@ -69,6 +69,7 @@ class Config:
     cwd: str | None = None
     verbose: bool = False
     trace_path: str | None = None  # Path to JSONL trace file (None = no tracing)
+    data_dir: str | None = None  # Read-only data directory (user's SFT data)
 
 
 def _create_log_tool_output_hook(session_id: str, tracer: Tracer | None = None):
@@ -234,10 +235,80 @@ def _extract_paths_from_input(
     return paths
 
 
+def _is_write_tool(tool_name: str) -> bool:
+    """Check if a tool performs write operations."""
+    write_tools = {
+        # File modification tools
+        "write",
+        "edit",
+        "delete",
+        "strreplace",
+        "str_replace",
+        "create",
+        "remove",
+        "mkdir",
+        "rmdir",
+        "move",
+        "copy",
+        "editnotebook",
+        "notebook_edit",
+    }
+    return tool_name.lower() in write_tools
+
+
+def _is_write_command(command: str) -> bool:
+    """Check if a bash command performs write operations."""
+    # Commands that modify the filesystem
+    write_commands = [
+        # File/directory operations
+        r"\brm\b",
+        r"\brmdir\b",
+        r"\bmkdir\b",
+        r"\bmv\b",
+        r"\btouch\b",
+        r"\bcp\b",  # cp can write to destination
+        # File content modification
+        r"\becho\b.*>",
+        r"\bcat\b.*>",
+        r"\bprintf\b.*>",
+        r"\btee\b",
+        r"\btruncate\b",
+        # In-place editing
+        r"\bsed\b.*-i",
+        r"\bawk\b.*-i",
+        # Git operations that modify
+        r"\bgit\b.*\b(add|commit|push|reset|checkout|merge|rebase|stash|rm|mv)\b",
+        # Permission changes
+        r"\bchmod\b",
+        r"\bchown\b",
+        r"\bchgrp\b",
+        # Archive extraction (writes files)
+        r"\btar\b.*-?x",
+        r"\bunzip\b",
+        r"\bgunzip\b",
+        # Python/pip that might write
+        r"\bpip\b.*install",
+        r"\buv\b.*(add|remove|sync)",
+    ]
+
+    for pattern in write_commands:
+        if re.search(pattern, command):
+            return True
+    return False
+
+
 def _create_can_use_tool_handler(
-    root_dir: Path | None = None, tracer: Tracer | None = None
+    root_dir: Path | None = None,
+    data_dir: Path | None = None,
+    tracer: Tracer | None = None,
 ):
-    """Factory: creates a can_use_tool handler that validates paths and modifies Bash commands."""
+    """Factory: creates a can_use_tool handler that validates paths and modifies Bash commands.
+
+    Args:
+        root_dir: The sandbox root directory (agent can read/write here)
+        data_dir: Read-only data directory (agent can only read from here)
+        tracer: Optional tracer for logging
+    """
     from claude_agent_sdk.types import (
         PermissionResultAllow,
         PermissionResultDeny,
@@ -249,19 +320,53 @@ def _create_can_use_tool_handler(
     ) -> PermissionResultAllow | PermissionResultDeny:
         """Permission handler that validates paths and wraps long-running Bash commands."""
 
-        # Path sandboxing: deny access outside root directory
-        if root_dir is not None:
+        # Check if tool/command is a write operation
+        is_write = _is_write_tool(tool_name)
+        tool_lower = tool_name.lower()
+        if tool_lower in {"bash", "shell", "execute", "run"}:
+            command = input_data.get("command", "")
+            is_write = is_write or _is_write_command(command)
+
+        # Path sandboxing logic
+        if root_dir is not None or data_dir is not None:
             paths = _extract_paths_from_input(tool_name, input_data, root_dir=root_dir)
+
             for path_str in paths:
-                if not _is_path_within_root(path_str, root_dir):
-                    console.print(
-                        f"[bold red]🚫 BLOCKED: {tool_name} tried to access '{path_str}' "
-                        f"outside sandbox root '{root_dir}'[/bold red]"
-                    )
-                    return PermissionResultDeny(
-                        message=f"Access denied: path '{path_str}' is outside the allowed directory '{root_dir}'. "
-                        f"You can only access files within '{root_dir}'."
-                    )
+                in_root = root_dir and _is_path_within_root(path_str, root_dir)
+                in_data = data_dir and _is_path_within_root(path_str, data_dir)
+
+                # Case 1: Path is in data_dir (read-only)
+                if in_data:
+                    if is_write:
+                        console.print(
+                            f"[bold red]🚫 BLOCKED: {tool_name} tried to write to '{path_str}' "
+                            f"in read-only data directory '{data_dir}'[/bold red]"
+                        )
+                        return PermissionResultDeny(
+                            message=f"Access denied: path '{path_str}' is in the read-only data directory '{data_dir}'. "
+                            f"You can read from this directory but cannot modify it."
+                        )
+                    # Read access to data_dir is allowed
+                    continue
+
+                # Case 2: Path is in root_dir (read/write allowed)
+                if in_root:
+                    continue
+
+                # Case 3: Path is outside both directories - deny
+                console.print(
+                    f"[bold red]🚫 BLOCKED: {tool_name} tried to access '{path_str}' "
+                    f"outside allowed directories[/bold red]"
+                )
+                allowed_dirs = []
+                if root_dir:
+                    allowed_dirs.append(f"sandbox '{root_dir}'")
+                if data_dir:
+                    allowed_dirs.append(f"data directory '{data_dir}' (read-only)")
+                return PermissionResultDeny(
+                    message=f"Access denied: path '{path_str}' is outside allowed directories. "
+                    f"You can access: {', '.join(allowed_dirs)}."
+                )
 
         # Only intercept Bash commands with significant timeout
         if tool_name.lower() not in {"bash", "shell", "execute", "run"}:
@@ -367,6 +472,13 @@ async def run_agent(config: Config) -> None:
     # TODO: check planning mode
     # Sandbox: restrict agent to cwd directory
     root_dir = Path(config.cwd).resolve() if config.cwd else Path.cwd().resolve()
+
+    # Resolve data_dir if provided (read-only access for user's SFT data)
+    data_dir = Path(config.data_dir).resolve() if config.data_dir else None
+    if data_dir and not data_dir.exists():
+        console.print(f"[yellow]Warning: data_dir '{data_dir}' does not exist[/yellow]")
+        data_dir = None
+
     options = ClaudeAgentOptions(
         tools={"type": "preset", "preset": "claude_code"},
         system_prompt=system_prompt_config,
@@ -375,7 +487,9 @@ async def run_agent(config: Config) -> None:
         mcp_servers={},
         continue_conversation=False,
         cwd=str(root_dir),
-        can_use_tool=_create_can_use_tool_handler(root_dir=root_dir, tracer=tracer),
+        can_use_tool=_create_can_use_tool_handler(
+            root_dir=root_dir, data_dir=data_dir, tracer=tracer
+        ),
         hooks={
             "PostToolUse": [
                 HookMatcher(
