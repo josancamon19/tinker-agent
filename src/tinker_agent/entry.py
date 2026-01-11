@@ -83,7 +83,7 @@ def launch_viewer() -> str:
             [
                 "streamlit",
                 "run",
-                str(Path(__file__).parent / "viewer.py"),
+                str(Path(__file__).parent / "ui" / "viewer.py"),
                 "--server.port=8501",
                 "--server.headless=true",
                 "--browser.gatherUsageStats=false",
