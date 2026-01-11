@@ -228,6 +228,136 @@ Type definitions: [llms-full.txt](https://github.com/thinking-machines-lab/tinke
 
 ---
 
+
+## Data Preparation
+
+Before training, analyze the dataset to make the right configuration decisions. Most datasets come from HuggingFace or are provided as JSONL files.
+
+### Handling Local Directories as Datasets
+
+When a user provides a local directory path instead of a HuggingFace dataset or JSONL file, you may need to **convert the raw documents into SFT training data**.
+
+**Detect when conversion is needed:**
+- Path points to a folder containing raw files (`.md`, `.txt`, `.py`, `.json`, etc.)
+- Files don't have SFT structure (`messages` array or `prompt/completion` pairs)
+
+**Conversion process:**
+
+1. **Crawl the directory** — Read all relevant files recursively
+2. **Chunk content** — Split large files into coherent sections (~500-1000 tokens)
+3. **Generate Q&A pairs** — For each chunk, synthesize question-answer pairs that the content answers
+4. **Save as JSONL** — Format as chat messages for SFT
+
+**Target: Generate at least 100 rows, ideally 1,000 rows** of synthetic training data.
+
+**Output format:**
+```json
+{"messages": [
+  {"role": "user", "content": "How does the authentication flow work?"},
+  {"role": "assistant", "content": "The auth flow uses OAuth2 with Keycloak. Users authenticate via /auth/login which returns a JWT token..."}
+]}
+```
+After conversion, proceed with standard SFT training using the generated JSONL file.
+
+### Dataset Size Limits
+
+**Hard limits to control cost and training time:**
+
+| Split          | Max Rows                         |
+| -------------- | -------------------------------- |
+| **Training**   | 20,000                           |
+| **Evaluation** | 10% of training size (max 2,000) |
+
+**CRITICAL: Always use datasets.load `streaming=True`** to avoid downloading massive datasets (some are 100GB+).
+
+**Why these limits:**
+- SFT sees diminishing returns after 10-20k diverse examples
+- Keeps training fast and cost-effective
+- Eval doesn't need to be large to measure NLL accurately
+- Streaming avoids downloading gigabytes of data you won't use
+
+For RL datasets, you typically need:
+- **Training prompts**: What the model will be trained on
+- **Evaluation prompts**: Held-out set to measure improvement (can be same distribution or different difficulty)
+
+### SFT: Choosing What Tokens to Train On (`train_on_what`)
+
+For SFT, you must decide which tokens contribute to the loss. This is controlled by `train_on_what`:
+
+```python
+from tinker_cookbook.supervised.common import TrainOnWhat
+
+class TrainOnWhat(StrEnum):
+    LAST_ASSISTANT_MESSAGE = "last_assistant_message"   # Only final response
+    ALL_ASSISTANT_MESSAGES = "all_assistant_messages"   # All assistant turns
+    ALL_MESSAGES = "all_messages"                       # User + assistant turns
+    ALL_TOKENS = "all_tokens"                           # Everything including system
+    ALL_USER_AND_SYSTEM_MESSAGES = "all_user_and_system_messages"  # Inverse of assistant
+    CUSTOMIZED = "customized"                           # Manual weight specification
+```
+
+**Guidelines:**
+
+| Dataset Type                              | Recommended `train_on_what` | Why                                    |
+| ----------------------------------------- | --------------------------- | -------------------------------------- |
+| Single-turn instruction (prompt→response) | `LAST_ASSISTANT_MESSAGE`    | Only train on the response             |
+| Multi-turn chat                           | `ALL_ASSISTANT_MESSAGES`    | Learn all assistant behaviors          |
+| Distillation from reasoning traces        | `LAST_ASSISTANT_MESSAGE`    | Learn the reasoning chain              |
+| System prompt baking                      | `ALL_TOKENS`                | Learn to internalize the system prompt |
+
+Default is `LAST_ASSISTANT_MESSAGE` which works for most instruction-following datasets.
+
+### SFT: Dataset Structure
+
+SFT datasets typically come in one of these formats:
+
+**Chat/Messages format** (preferred):
+```json
+{"messages": [
+  {"role": "system", "content": "You are helpful."},
+  {"role": "user", "content": "What is 2+2?"},
+  {"role": "assistant", "content": "4"}
+]}
+```
+
+**Prompt/Completion format**:
+```json
+{"prompt": "What is 2+2?", "completion": "4"}
+```
+
+**Instruction/Input/Output format**:
+```json
+{"instruction": "Add these numbers", "input": "2+2", "output": "4"}
+```
+
+Use the appropriate dataset builder:
+- `ChatDatasetBuilder` — For messages format
+- `FromConversationFileBuilder` — For custom JSONL files
+- Write a custom builder for non-standard formats
+
+### RL: Identifying the Reward Signal
+
+For RL, you need a verifiable reward. Analyze the dataset to determine what makes an answer "correct":
+
+| Dataset Type               | Reward Signal                           | Recipe            |
+| -------------------------- | --------------------------------------- | ----------------- |
+| Math (GSM8K, MATH)         | Ground truth answer, extract with regex | `math_rl/`        |
+| Code (LeetCode, HumanEval) | Test case execution                     | `code_rl/`        |
+| Factual QA                 | Exact match or F1 against ground truth  | `verifiers_rl/`   |
+| Games                      | Win/lose/draw outcome                   | `multiplayer_rl/` |
+| No ground truth            | LLM-as-judge rubric                     | `rubric/`         |
+| Preference pairs           | Chosen > Rejected                       | `preference/dpo/` |
+
+For math/code, the dataset should have:
+```json
+{"question": "...", "answer": "42"}  // or "solution" or "ground_truth"
+```
+
+For preference, the dataset should have:
+```json
+{"prompt": "...", "chosen": "...", "rejected": "..."}
+```
+
 ## Parallelizing Evaluation
 
 Tinker charges per token, not per GPU-hour. This means **parallelization is free**—you can fire off many concurrent requests without additional cost, only paying for the tokens processed. Prioritize speed in evaluation runs by parallelizing sampling requests.
@@ -238,74 +368,12 @@ Tinker charges per token, not per GPU-hour. This means **parallelization is free
 - **Speed**: A sequential evaluation of 1000 samples at 1s/sample = 16+ minutes. Parallelized with concurrency=50, it takes ~20 seconds.
 - **Rate limits**: Tinker handles high concurrency well. Use `asyncio.Semaphore` to cap concurrent requests if needed (e.g., 100-200 concurrent requests is typically safe).
 
-### Sequential (Slow) — Don't Do This
-
-```python
-# BAD: Sequential evaluation - very slow
-results = []
-for idx, example in enumerate(dataset):
-    completion = await completer(prompt)  # Waits for each one
-    results.append(process(completion))
-```
-
-### Parallel (Fast) — Do This Instead
-
-```python
-import asyncio
-
-async def evaluate_single(idx: int, example: dict, completer, semaphore) -> EvalResult:
-    """Evaluate a single example with concurrency control."""
-    async with semaphore:
-        prompt = format_prompt(example)
-        completion = await completer(prompt)
-        return EvalResult(
-            index=idx,
-            question=example["question"],
-            ground_truth=example["answer"],
-            completion=completion,
-            extracted_answer=extract_answer(completion),
-            correct=grade(completion, example["answer"]),
-        )
-
-async def evaluate_parallel(dataset, completer, max_concurrent: int = 50) -> list[EvalResult]:
-    """Evaluate all examples in parallel with bounded concurrency."""
-    semaphore = asyncio.Semaphore(max_concurrent)
-    
-    tasks = [
-        evaluate_single(idx, example, completer, semaphore)
-        for idx, example in enumerate(dataset)
-    ]
-    
-    # Run all tasks concurrently, gather results in order
-    results = await asyncio.gather(*tasks)
-    return results
-```
-
 ### Key Patterns
 
 1. **Use `asyncio.Semaphore`** to limit concurrent requests (50-100 is a good default)
 2. **Use `asyncio.gather`** to run all tasks concurrently and collect results
 3. **Keep individual task functions simple** — one sample per coroutine
 4. **Handle errors gracefully** — wrap individual completions in try/except so one failure doesn't crash the batch
-
-### Progress Tracking with Parallel Evaluation
-
-```python
-import asyncio
-from tqdm.asyncio import tqdm_asyncio
-
-async def evaluate_parallel_with_progress(dataset, completer, max_concurrent: int = 50):
-    semaphore = asyncio.Semaphore(max_concurrent)
-    
-    async def eval_one(idx, example):
-        async with semaphore:
-            # ... evaluation logic ...
-            return result
-    
-    tasks = [eval_one(idx, ex) for idx, ex in enumerate(dataset)]
-    results = await tqdm_asyncio.gather(*tasks, desc="Evaluating")
-    return results
-```
 
 ---
 
@@ -438,315 +506,6 @@ Analyze the user's task to determine the training signal:
 - Multiple teachers → `distillation/on_policy_multi_teacher`
 
 If the task doesn't fit any category, ask the user for clarification about their training signal.
-
----
-
-## Data Preparation
-
-Before training, analyze the dataset to make the right configuration decisions. Most datasets come from HuggingFace or are provided as JSONL files.
-
-### Handling Local Directories as Datasets
-
-When a user provides a local directory path instead of a HuggingFace dataset or JSONL file, you may need to **convert the raw documents into SFT training data**.
-
-**Detect when conversion is needed:**
-- Path points to a folder containing raw files (`.md`, `.txt`, `.py`, `.json`, etc.)
-- Files don't have SFT structure (`messages` array or `prompt/completion` pairs)
-
-**Conversion process:**
-
-1. **Crawl the directory** — Read all relevant files recursively
-2. **Chunk content** — Split large files into coherent sections (~500-1000 tokens)
-3. **Generate Q&A pairs** — For each chunk, synthesize question-answer pairs that the content answers
-4. **Save as JSONL** — Format as chat messages for SFT
-
-**Target: Generate at least 100 rows, ideally 1,000 rows** of synthetic training data.
-
-**Output format:**
-```json
-{"messages": [
-  {"role": "user", "content": "How does the authentication flow work?"},
-  {"role": "assistant", "content": "The auth flow uses OAuth2 with Keycloak. Users authenticate via /auth/login which returns a JWT token..."}
-]}
-```
-
-**Example conversion script:**
-
-```python
-import json
-from pathlib import Path
-
-def crawl_directory(directory: str, extensions: list[str] = None) -> list[dict]:
-    """Read files from directory."""
-    if extensions is None:
-        extensions = [".md", ".txt", ".py", ".js", ".ts", ".json"]
-
-    docs = []
-    for path in Path(directory).rglob("*"):
-        if path.suffix in extensions and path.is_file():
-            content = path.read_text(encoding="utf-8", errors="ignore")
-            if content.strip():
-                docs.append({"path": str(path), "filename": path.name, "content": content})
-    return docs
-
-def chunk_content(doc: dict, max_tokens: int = 800) -> list[dict]:
-    """Split document into chunks."""
-    content = doc["content"]
-    chunks = []
-
-    # Split by double newlines or headers
-    sections = content.split("\n\n")
-    current = ""
-
-    for section in sections:
-        if len((current + section).split()) > max_tokens:
-            if current:
-                chunks.append({"source": doc["filename"], "content": current.strip()})
-            current = section
-        else:
-            current += "\n\n" + section
-
-    if current:
-        chunks.append({"source": doc["filename"], "content": current.strip()})
-
-    return [c for c in chunks if len(c["content"]) > 50]
-
-async def synthesize_pairs(chunk: dict, completer, num_pairs: int = 3) -> list[dict]:
-    """Generate Q&A pairs from content using an LLM."""
-    prompt = f"""Given this content, generate {num_pairs} question-answer pairs.
-
-Content from "{chunk['source']}":
----
-{chunk['content']}
----
-
-Generate diverse questions (factual, how-to, explanatory) that this content answers.
-Return as JSON array: [{{"q": "question", "a": "answer"}}]"""
-
-    response = await completer(prompt)
-    pairs = json.loads(response)
-
-    return [
-        {"messages": [
-            {"role": "user", "content": p["q"]},
-            {"role": "assistant", "content": p["a"]}
-        ]}
-        for p in pairs
-    ]
-
-async def convert_directory_to_sft(directory: str, output_path: str, target_rows: int = 1000):
-    """Convert a directory of documents to SFT training data."""
-    docs = crawl_directory(directory)
-    chunks = [c for doc in docs for c in chunk_content(doc)]
-    pairs_per_chunk = max(1, target_rows // len(chunks))
-
-    all_pairs = []
-    for chunk in chunks:
-        pairs = await synthesize_pairs(chunk, completer, num_pairs=pairs_per_chunk)
-        all_pairs.extend(pairs)
-        if len(all_pairs) >= target_rows:
-            break
-
-    with open(output_path, "w") as f:
-        for pair in all_pairs:
-            f.write(json.dumps(pair) + "\n")
-
-    print(f"Generated {len(all_pairs)} examples → {output_path}")
-```
-
-After conversion, proceed with standard SFT training using the generated JSONL file.
-
-### Dataset Size Limits
-
-**Hard limits to control cost and training time:**
-
-| Split          | Max Rows                         |
-| -------------- | -------------------------------- |
-| **Training**   | 20,000                           |
-| **Evaluation** | 10% of training size (max 2,000) |
-
-**CRITICAL: Always use `streaming=True`** to avoid downloading massive datasets (some are 100GB+):
-
-```python
-from datasets import load_dataset
-
-# ALWAYS use streaming=True to avoid downloading entire dataset
-ds = load_dataset("dataset/name", split="train", streaming=True)
-
-# Take only what we need (max 20k for training)
-ds = ds.shuffle(seed=42, buffer_size=10_000)
-samples = list(ds.take(20_000))
-
-# Convert to regular dataset for processing
-from datasets import Dataset
-ds = Dataset.from_list(samples)
-
-# Split for eval (10% of training, max 2000)
-train_size = len(ds)
-eval_size = min(int(train_size * 0.1), 2_000)
-split = ds.train_test_split(test_size=eval_size, seed=42)
-train_data = split["train"]
-eval_data = split["test"]
-
-print(f"Training: {len(train_data):,} rows")
-print(f"Eval: {len(eval_data):,} rows")
-```
-
-**Why these limits:**
-- SFT sees diminishing returns after 10-20k diverse examples
-- Keeps training fast and cost-effective
-- Eval doesn't need to be large to measure NLL accurately
-- Streaming avoids downloading gigabytes of data you won't use
-
-### Train/Test Splits
-
-Check if the dataset has a predefined split:
-
-```python
-from datasets import load_dataset
-
-ds = load_dataset("allenai/tulu-3-sft-mixture")
-print(ds)  # Check for 'train', 'test', 'validation' keys
-```
-
-If the dataset has **only a train split** (common for SFT datasets), create a test split for evaluation:
-
-```python
-# Split 90% train, 10% test
-split = ds["train"].train_test_split(test_size=0.1, seed=42)
-train_data = split["train"]
-test_data = split["test"]
-```
-
-For RL datasets, you typically need:
-- **Training prompts**: What the model will be trained on
-- **Evaluation prompts**: Held-out set to measure improvement (can be same distribution or different difficulty)
-
-### SFT: Choosing What Tokens to Train On (`train_on_what`)
-
-For SFT, you must decide which tokens contribute to the loss. This is controlled by `train_on_what`:
-
-```python
-from tinker_cookbook.supervised.common import TrainOnWhat
-
-class TrainOnWhat(StrEnum):
-    LAST_ASSISTANT_MESSAGE = "last_assistant_message"   # Only final response
-    ALL_ASSISTANT_MESSAGES = "all_assistant_messages"   # All assistant turns
-    ALL_MESSAGES = "all_messages"                       # User + assistant turns
-    ALL_TOKENS = "all_tokens"                           # Everything including system
-    ALL_USER_AND_SYSTEM_MESSAGES = "all_user_and_system_messages"  # Inverse of assistant
-    CUSTOMIZED = "customized"                           # Manual weight specification
-```
-
-**Guidelines:**
-
-| Dataset Type                              | Recommended `train_on_what` | Why                                    |
-| ----------------------------------------- | --------------------------- | -------------------------------------- |
-| Single-turn instruction (prompt→response) | `LAST_ASSISTANT_MESSAGE`    | Only train on the response             |
-| Multi-turn chat                           | `ALL_ASSISTANT_MESSAGES`    | Learn all assistant behaviors          |
-| Distillation from reasoning traces        | `LAST_ASSISTANT_MESSAGE`    | Learn the reasoning chain              |
-| System prompt baking                      | `ALL_TOKENS`                | Learn to internalize the system prompt |
-
-Default is `LAST_ASSISTANT_MESSAGE` which works for most instruction-following datasets.
-
-### SFT: Dataset Structure
-
-SFT datasets typically come in one of these formats:
-
-**Chat/Messages format** (preferred):
-```json
-{"messages": [
-  {"role": "system", "content": "You are helpful."},
-  {"role": "user", "content": "What is 2+2?"},
-  {"role": "assistant", "content": "4"}
-]}
-```
-
-**Prompt/Completion format**:
-```json
-{"prompt": "What is 2+2?", "completion": "4"}
-```
-
-**Instruction/Input/Output format**:
-```json
-{"instruction": "Add these numbers", "input": "2+2", "output": "4"}
-```
-
-Use the appropriate dataset builder:
-- `ChatDatasetBuilder` — For messages format
-- `FromConversationFileBuilder` — For custom JSONL files
-- Write a custom builder for non-standard formats
-
-### RL: Identifying the Reward Signal
-
-For RL, you need a verifiable reward. Analyze the dataset to determine what makes an answer "correct":
-
-| Dataset Type               | Reward Signal                           | Recipe            |
-| -------------------------- | --------------------------------------- | ----------------- |
-| Math (GSM8K, MATH)         | Ground truth answer, extract with regex | `math_rl/`        |
-| Code (LeetCode, HumanEval) | Test case execution                     | `code_rl/`        |
-| Factual QA                 | Exact match or F1 against ground truth  | `verifiers_rl/`   |
-| Games                      | Win/lose/draw outcome                   | `multiplayer_rl/` |
-| No ground truth            | LLM-as-judge rubric                     | `rubric/`         |
-| Preference pairs           | Chosen > Rejected                       | `preference/dpo/` |
-
-For math/code, the dataset should have:
-```json
-{"question": "...", "answer": "42"}  // or "solution" or "ground_truth"
-```
-
-For preference, the dataset should have:
-```json
-{"prompt": "...", "chosen": "...", "rejected": "..."}
-```
-
-### Example: Preparing an SFT Dataset
-
-```python
-from datasets import load_dataset
-from tinker_cookbook.supervised.common import TrainOnWhat
-from tinker_cookbook.supervised.data import HuggingFaceConversationBuilder
-
-# Load dataset
-ds = load_dataset("HuggingFaceH4/no_robots")
-
-# Check structure
-print(ds["train"][0])  # Inspect format
-
-# Create builder with appropriate settings
-dataset_builder = HuggingFaceConversationBuilder(
-    path="HuggingFaceH4/no_robots",
-    split="train",
-    messages_column="messages",
-    train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE,
-    max_length=2048,
-)
-
-# For evaluation, create test split if needed
-test_builder = HuggingFaceConversationBuilder(
-    path="HuggingFaceH4/no_robots",
-    split="test",  # or create from train split
-    messages_column="messages",
-    train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE,
-    max_length=2048,
-)
-```
-
-### Example: Preparing an RL Dataset
-
-```python
-from datasets import load_dataset
-
-# Load dataset
-ds = load_dataset("openai/gsm8k", "main")
-
-# Check structure - need question and answer
-print(ds["train"][0])
-# {'question': '...', 'answer': '#### 42'}
-
-# For math_rl, the recipe handles answer extraction via grade_answer()
-# Just need to provide the dataset path and answer column name
-```
 
 ---
 
