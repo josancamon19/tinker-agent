@@ -1,0 +1,2 @@
+- [ ] make a real eval out of this, @eval.py needs much more love
+- [ ] this can be scaled to 
