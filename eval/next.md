@@ -1,2 +1,3 @@
 - [ ] make a real eval out of this, @eval.py needs much more love
-- [ ] this can be scaled to 
+- [ ] this can be scaled to any domains?
+- [ ] it could be further enforced if for every task there's a tool that runs the eval for a checkpoint id, so the model doens't have to look into that
