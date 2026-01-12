@@ -7,4 +7,4 @@
 {"dataset": "PrimeIntellect/verifiable-math-problems", "task": "RL", "model": "Qwen/Qwen3-4B-Instruct-2507"}
 {"dataset": "open-thoughts/OpenThoughts-Agent-v1-RL", "task": "RL", "model": "Qwen/Qwen3-4B-Instruct-2507"}
 {"dataset": "livecodebench/code_generation_lite", "task": "RL", "model": "Qwen/Qwen3-4B-Instruct-2507"}
-{"dataset": "allenai/ifbench", "task": "RL", "model": "Qwen/Qwen3-4B-Instruct-2507"}
+{"dataset": "allenai/IFBench_test", "task": "RL", "model": "Qwen/Qwen3-4B-Instruct-2507"}

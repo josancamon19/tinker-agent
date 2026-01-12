@@ -453,7 +453,7 @@ async def run_agent(config: Config) -> None:
 
     system_prompt_config = None
     if config.use_custom_prompt:
-        prompt_path = Path(__file__).parent.parent.parent / "prompt.md"
+        prompt_path = Path(__file__).parent / "prompt.md"
         if prompt_path.exists():
             custom_prompt = prompt_path.read_text()
             system_prompt_config = {

@@ -300,15 +300,17 @@ def run_benchmarks(config: BenchmarkConfig):
         """Convert ValidationResult to dict and add benchmark info."""
         if result.get("validation"):
             v = result["validation"]
-            result["validation"] = {
-                "valid": v.valid,
-                "errors": v.errors,
-                "task_type": v.task_type,
-                "base_score": v.base_score,
-                "trained_score": v.trained_score,
-                "base_nll": v.base_nll,
-                "trained_nll": v.trained_nll,
-            }
+            # Only convert if it's not already a dict
+            if not isinstance(v, dict):
+                result["validation"] = {
+                    "valid": v.valid,
+                    "errors": v.errors,
+                    "task_type": v.task_type,
+                    "base_score": v.base_score,
+                    "trained_score": v.trained_score,
+                    "base_nll": v.base_nll,
+                    "trained_nll": v.trained_nll,
+                }
         return {
             "benchmark": benchmark,
             "index": actual_idx,
